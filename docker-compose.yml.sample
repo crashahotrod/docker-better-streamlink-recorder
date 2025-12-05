@@ -2,6 +2,7 @@ services:
   streamlinkrecorder:
     image: crashahotrod/docker-better-streamlink-recorder-twitch
     container_name: streamlinkrecorder
+    command: 'supervisord -n'
     environment:
       - CHANNEL=channelToMonitorHere
       - TWITCH_CLIENT_ID=yourClientID

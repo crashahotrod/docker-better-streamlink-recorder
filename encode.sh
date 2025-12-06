@@ -1,5 +1,5 @@
 #!/bin/bash
-MONITORDIR="/etc/streamlink/scratch/encode"
+MONITORDIR="/etc/streamlink/scratch/$CHANNEL/encode"
 STORAGE_DIR="/storage"
 
 #: "${CHANNEL:?Need CHANNEL}"

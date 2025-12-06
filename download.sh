@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-DOWNLOAD_DIR="/etc/streamlink/scratch/download"
-ENCODE_DIR="/etc/streamlink/scratch/encode"
+DOWNLOAD_DIR="/etc/streamlink/scratch/$CHANNEL/download"
+ENCODE_DIR="/etc/streamlink/scratch/$CHANNEL/encode"
 CHECK_INTERVAL=30   #seconds between live checks
 
 #: "${CHANNEL:?Need CHANNEL}"

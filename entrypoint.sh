@@ -31,5 +31,5 @@ if [ "$ErrorPresent" -eq 0 ]; then
     exit 1
 fi
 
-mkdir -p /etc/streamlink/scratch/{encode,download}
+mkdir -p /etc/streamlink/scratch/$CHANNEL/{encode,download}
 exec "$@"

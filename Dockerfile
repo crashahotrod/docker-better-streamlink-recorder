@@ -1,7 +1,9 @@
+ARG ARCH_CODE
+
 FROM python:3.12.2
 LABEL org.opencontainers.image.authors="crashahotrod@gmail.com"
 ARG YTU_RELEASE=1.25.5
-ARG BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/download/v${YTU_RELEASE}/youtubeuploader_${YTU_RELEASE}_Linux_${TARGETARCH}.tar.gz"
+ARG BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/download/v${YTU_RELEASE}/youtubeuploader_${YTU_RELEASE}_Linux_${ARCH_CODE}.tar.gz"
 RUN echo "Downloading ${BINARY_DOWNLOAD_URL}..." curl -L -o /youtubeuploader.tar.gz "${BINARY_DOWNLOAD_URL}"
 RUN tar -xzf /youtubeuploader.tar.gz -C /etc/ youtubeuploader
 ENV streamlinkCommit=5a83a3806b5941639c3751ac15a9fed175019b31

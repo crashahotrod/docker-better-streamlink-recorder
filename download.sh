@@ -157,7 +157,7 @@ notify_discord() {
 # ------------------------------------------------------------
 echo "[Monitor] Starting live status loop for channel: $CHANNEL"
 
-if [ "${YOUTUBE_SPLITTING:-false}" == "true" ]; then
+if [ "${YOUTUBE_SPLITTING:-false}" == true ]; then
     HLS_DURATION="--hls-duration 11h59m30s"
 else
     HLS_DURATION=""
@@ -209,7 +209,7 @@ if [ $MODE == "twitch" ]; then
             "twitch.tv/${CHANNEL}" best
 
         echo "[Monitor] Streamlink completed. Checking status again..."
-        if [ "{$UPLOAD:-false}" == "false" ]; then
+        if [ "{$UPLOAD:-false}" == false ]; then
             mv "$outfile" "$ENCODE_DIR/$FILENAME"
             echo moved "$NEWFILE" to "$ENCODE_DIR/$FILENAME"
         fi
@@ -220,9 +220,7 @@ elif [ $MODE == "kick" ]; then
         ensure_kick_token
         json=$(get_kick_channel_info 2>/dev/null)
         live=$(echo "$json" | jq '.data[0].stream.is_live')
-        echo "[Debug] $live"
-        echo "[Full Debug] $json"
-        if [ live != "true" ]; then
+        if [ live != true ]; then
             echo "[Monitor] Channel ${CHANNEL} not live. Checking again in ${CHECK_INTERVAL}s."
             sleep "$CHECK_INTERVAL"
             continue
@@ -258,7 +256,7 @@ elif [ $MODE == "kick" ]; then
             "kick.com/${CHANNEL}" best
 
         echo "[Monitor] Streamlink completed. Checking status again..."
-        if [ "{$UPLOAD:-false}" == "false" ]; then
+        if [ "{$UPLOAD:-false}" == false ]; then
             mv "$outfile" "$ENCODE_DIR/$FILENAME"
             echo moved "$NEWFILE" to "$ENCODE_DIR/$FILENAME"
         fi

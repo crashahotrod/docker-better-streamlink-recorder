@@ -145,7 +145,7 @@ get_kick_channel_info() {
 # ------------------------------------------------------------
 echo "[Monitor] Starting live status loop for channel: $CHANNEL"
 
-if (( mode == "twitch")); then
+if [ mode == "twitch" ]; then
     while true; do
         # Make sure token is valid in the PARENT shell
         ensure_twitch_token

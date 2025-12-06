@@ -6,7 +6,18 @@ ARG ARCH_CODE
 FROM python:3.12.2
 LABEL org.opencontainers.image.authors="crashahotrod@gmail.com"
 ARG YTU_RELEASE=1.25.5
-ARG BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/download/v${YTU_RELEASE}/youtubeuploader_${YTU_RELEASE}_Linux_${ARCH_CODE}.tar.gz"
+RUN set -e; \
+    if [ -z "$TARGETPLATFORM" ]; then \
+        echo "Error: TARGETPLATFORM is not set." >&2 && exit 1; \
+    fi; \
+    OS_LOWER=$(echo "$TARGETPLATFORM" | cut -d/ -f1); \
+    ARCH_CODE=$(echo "$TARGETPLATFORM" | cut -d/ -f2); \
+    OS_NAME=$(echo "$OS_LOWER" | awk '{print toupper(substr($0, 1, 1)) substr($0, 2)}'); \
+    PLATFORM_CODE="${OS_NAME}_${ARCH_CODE}"; \
+    echo "Resolved PLATFORM_CODE: $PLATFORM_CODE"; \
+    echo "$PLATFORM_CODE" > /tmp/ytu_platform_code
+ARG YTU_PLATFORM_CODE=$(cat /tmp/ytu_platform_code)
+ARG BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/download/v${YTU_RELEASE}/youtubeuploader_${YTU_RELEASE}_${YTU_PLATFORM_CODE}.tar.gz"
 RUN echo "Building for Platform:${TARGETPLATFORM} OS/ARCH:${TARGETOS}/${TARGETARCH} Code:${ARCH_CODE}"
 RUN echo "Downloading ${BINARY_DOWNLOAD_URL}..." curl -L -o /youtubeuploader.tar.gz "${BINARY_DOWNLOAD_URL}"
 RUN tar -xzf /youtubeuploader.tar.gz -C /etc/ youtubeuploader

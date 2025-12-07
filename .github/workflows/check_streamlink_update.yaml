@@ -15,7 +15,7 @@ jobs:
       FILE_TO_UPDATE: 'Dockerfile'
 
     steps:
-    - name: Checkout docker-better-streamlink-recorder-twitch
+    - name: Checkout docker-better-streamlink-recorder
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.REPO_PAT }}

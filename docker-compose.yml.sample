@@ -1,6 +1,6 @@
 services:
   streamlinkrecorder:
-    image: crashahotrod/docker-better-streamlink-recorder-twitch
+    image: crashahotrod/docker-better-streamlink-recorder
     container_name: streamlinkrecorder
     environment:
       - MODE=kickortwitch

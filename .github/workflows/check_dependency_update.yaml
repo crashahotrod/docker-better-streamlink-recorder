@@ -29,6 +29,7 @@ jobs:
           LATEST_HASH=$(curl -s "https://api.github.com/repos/${{ env.REPO_A_OWNER }}/${{ env.REPO_A_NAME }}/commits/${{ env.REPO_A_BRANCH }}" | jq -r .sha)
         
           if [ "$LATEST_HASH" == "null" ] || [ -z "$LATEST_HASH" ]; then
+            ATTEMPT=$((ATTEMPT + 1))
             echo "Error: Could not retrieve hash from Streamlink repo. Check github.com/streamlink/streamlink."
             echo "Waiting 5 seconds before next retry..."
             sleep 5
@@ -55,7 +56,8 @@ jobs:
         while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
           release_json=$(curl https://api.github.com/repos/porjo/youtubeuploader/releases/latest)
           LATEST_TAG=$(echo "$release_json" | jq -r '.tag_name')
-          if [ "$LATEST_HASH" == "null" ] || [ -z "$LATEST_HASH" ]; then
+          if [ "$LATEST_TAG" == "null" ] || [ -z "$LATEST_TAG" ]; then
+            ATTEMPT=$((ATTEMPT + 1))
             echo "Error: Could not retrieve tag from Youtubeuploader repo. Check github.com/porjo/youtubeuploader/releases/latest."
             echo "Waiting 5 seconds before next retry..."
             sleep 5

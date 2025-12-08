@@ -3,6 +3,7 @@ set -euo pipefail
 
 DOWNLOAD_DIR="/etc/streamlink/scratch/$MODE/$CHANNEL/download"
 ENCODE_DIR="/etc/streamlink/scratch/$MODE/$CHANNEL/encode"
+STORAGE_DIR="/storage"
 CHECK_INTERVAL=30   #seconds between live checks
 ACCESS_TOKEN=""
 TOKEN_EXPIRES_AT=0  # epoch timestamp
@@ -210,8 +211,25 @@ if [ $MODE == "twitch" ]; then
 
         echo "[Monitor] Streamlink completed. Checking status again..."
         if [ "{$UPLOAD:-false}" == "false" ]; then
-            mv "$outfile" "$ENCODE_DIR/$FILENAME"
-            echo moved "$NEWFILE" to "$ENCODE_DIR/$FILENAME"
+            if [ "{$ENCODE:-false}" == "true" ]; then
+                mv "$outfile" "$ENCODE_DIR/$FILENAME"
+                echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
+            else
+                mv "$outfile" "$ENCODE_DIR/$FILENAME"
+                echo moved "$FILENAME" to "$ENCODE_DIR/$FILENAME"
+                STREAMTITLE="$(basename "$FILENAME" | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - //; s/ - [0-9]+\.ts$//; s/</＜/g; s/>/＞/g')"
+                echo "ST is: "$STREAMTITLE""
+                MP4=$(echo "$FILENAME" | sed 's/\.ts$/.mp4/')
+                echo "MP4 is: "$MP4""
+                MP4PATH=$(echo "$outfile" | sed 's/\.ts$/.mp4/')
+                mv "$outfile" "$MP4PATH"
+                echo "Will try and execute exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$MP4PATH""
+                exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$MP4PATH"
+                sleep 2
+                FOLDERDATE=$(date +%Y%m)
+                mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
+                mv "$MP4PATH" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$MP4"
+            fi
         fi
         sleep "$CHECK_INTERVAL"
     done
@@ -257,8 +275,25 @@ elif [ $MODE == "kick" ]; then
 
         echo "[Monitor] Streamlink completed. Checking status again..."
         if [ "{$UPLOAD:-false}" == "false" ]; then
-            mv "$outfile" "$ENCODE_DIR/$FILENAME"
-            echo moved "$NEWFILE" to "$ENCODE_DIR/$FILENAME"
+            if [ "{$ENCODE:-false}" == "true" ]; then
+                mv "$outfile" "$ENCODE_DIR/$FILENAME"
+                echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
+            else
+                mv "$outfile" "$ENCODE_DIR/$FILENAME"
+                echo moved "$FILENAME" to "$ENCODE_DIR/$FILENAME"
+                STREAMTITLE="$(basename "$FILENAME" | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - //; s/ - [0-9]+\.ts$//; s/</＜/g; s/>/＞/g')"
+                echo "ST is: "$STREAMTITLE""
+                MP4=$(echo "$FILENAME" | sed 's/\.ts$/.mp4/')
+                echo "MP4 is: "$MP4""
+                MP4PATH=$(echo "$outfile" | sed 's/\.ts$/.mp4/')
+                mv "$outfile" "$MP4PATH"
+                echo "Will try and execute exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$MP4PATH""
+                exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$MP4PATH"
+                sleep 2
+                FOLDERDATE=$(date +%Y%m)
+                mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
+                mv "$MP4PATH" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$MP4"
+            fi
         fi
         sleep "$CHECK_INTERVAL"
     done

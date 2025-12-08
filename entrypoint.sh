@@ -42,13 +42,17 @@ check_required_file() {
     fi
 }
 
-if [ $UPLOAD == "true" ]; then
+if [ "{$UPLOAD:-false}" == "true" ]; then
     check_required_var UPLOAD_BOT_NAME
-    sed -i '/^\[program:streamlink_upload\]/,/^\[/ {/autostart=fs6alse/ s/autostart=false/autostart=true/}' /etc/supervisor/conf.d/supervisord.conf
+    sed -i '/^\[program:streamlink_upload\]/,/^\[/ {/autostart=false/ s/autostart=false/autostart=true/}' /etc/supervisor/conf.d/supervisord.conf
     if check_required_file "/config/youtubeuploader_client_secrets.json" && check_required_file "/config/youtubeuploader_request.token"; then
         ln -s /config/youtubeuploader_client_secrets.json /etc/client_secrets.json
         ln -s /config/youtubeuploader_request.token /etc/request.token
     fi
+fi
+
+if [ "{$ENCODE:-false}" == "true" ]; then
+    sed -i '/^\[program:streamlink_encode\]/,/^\[/ {/autostart=false/ s/autostart=false/autostart=true/}' /etc/supervisor/conf.d/supervisord.conf
 fi
 
 if [ "$ErrorPresent" -eq 0 ]; then

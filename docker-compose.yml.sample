@@ -8,6 +8,7 @@ services:
       - CLIENT_ID=yourClientID
       - CLIENT_SECRET=yourClientSecret
       #optional
+      - ENCODE=trueorfalse
       - UPLOAD=trueorfalse
       - UPLOAD_BOT_NAME=name
       - YOUTUBE_SPLITTING=trueorfalse

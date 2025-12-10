@@ -106,7 +106,7 @@ jobs:
       if: ${{ steps.check_streamlink.outputs.update_needed == 'true' || steps.check_ytu.outputs.update_needed == 'true' }} 
       run: |
         message="Automated:"
-        if [ "${{ steps.check_streamlink.outputs.update_needed" }}" == 'true' ]; then
+        if [ "${{ steps.check_streamlink.outputs.update_needed }}" == 'true' ]; then
           message="${message} Update Streamlink commit hash to ${{ steps.get_latest_hash.outputs.LATEST_HASH }}"
         fi
         if [ "${{ steps.check_ytu.outputs.update_needed }}" == 'true' ]; then

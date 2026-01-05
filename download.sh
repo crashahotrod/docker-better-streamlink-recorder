@@ -79,7 +79,7 @@ get_twitch_stream_info() {
 # Function: get a new kick token
 # ------------------------------------------------------------
 get_new_kick_token() {
-    echo "[Twitch] Getting new app access token..." >&2
+    echo "[Kick] Getting new app access token..." >&2
     local now
     now=$(date +%s)
 
@@ -97,11 +97,11 @@ get_new_kick_token() {
     TOKEN_EXPIRES_AT=$(( now + expires_in - 60 ))  # Refresh 1 min early
 
     if [[ -z "$ACCESS_TOKEN" || "$ACCESS_TOKEN" == "null" ]]; then
-        echo "[Twitch] ERROR: Could not obtain token." >&2
+        echo "[Kick] ERROR: Could not obtain token." >&2
         exit 1
     fi
 
-    echo "[Twitch] Token acquired, good until epoch ${TOKEN_EXPIRES_AT}" >&2
+    echo "[Kick] Token acquired, good until epoch ${TOKEN_EXPIRES_AT}" >&2
 }
 
 # ------------------------------------------------------------

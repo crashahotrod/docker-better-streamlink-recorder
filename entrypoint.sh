@@ -24,8 +24,8 @@ chown -R "$USER_NAME:$USER_NAME" /config /storage /etc/streamlink/scratch
 
 check_required_dir() {
     local dir_name="$1"
-    if gosu $USER_NAME test -w "$dir_name"; then
-        rm -f "{$dir_name}/.write_test"
+    if gosu $USER_NAME touch "${dir_name}/.write_test" 2>/dev/null; then
+        rm -f "${dir_name}/.write_test"
     else
         echo "ERROR: The mounted directory ${dir_name} is NOT writeable by $USER_NAME." >&2
         ErrorPresent=1

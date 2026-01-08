@@ -8,7 +8,7 @@ RUN groupadd -g ${GROUP_ID} ${USER_NAME} && useradd -u ${USER_ID} -g ${USER_NAME
 ARG YTU_RELEASE=v1.25.5
 ARG YTU_SHORT="${YTU_RELEASE#v}"
 ARG BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/download/${YTU_RELEASE}/youtubeuploader_${YTU_SHORT}_Linux_amd64.tar.gz"
-RUN apt-get update && apt-get install -y supervisor python3-pip jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y supervisor python3-pip jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus dbus-x11 && rm -rf /var/lib/apt/lists/*
 RUN curl -L -o youtubeuploader.tar.gz "${BINARY_DOWNLOAD_URL}"
 RUN tar -xzf youtubeuploader.tar.gz -C /etc youtubeuploader
 ENV streamlinkCommit=68fff72d45465a5792db92defcb3864aed9e052e

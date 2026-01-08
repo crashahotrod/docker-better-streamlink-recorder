@@ -199,7 +199,7 @@ if [ $MODE == "twitch" ]; then
         fi
 
         #Initialize browser for streamlink (Any URL)
-        /usr/bin/chromium --verbose --headless --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
+        /usr/bin/chromium --verbose --headless --no-sandbox --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
 
         /usr/local/bin/streamlink \
             --retry-streams 30 \
@@ -258,7 +258,7 @@ elif [ $MODE == "kick" ]; then
         fi
 
         #Initialize browser for streamlink (Any URL)
-        /usr/bin/chromium --verbose --headless --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
+        /usr/bin/chromium --verbose --headless --no-sandbox --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
 
         /usr/local/bin/streamlink \
             --retry-streams 30 \

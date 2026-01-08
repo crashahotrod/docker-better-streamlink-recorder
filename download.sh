@@ -213,8 +213,8 @@ if [ $MODE == "twitch" ]; then
             "twitch.tv/${CHANNEL}" best
 
         echo "[Monitor] Streamlink completed. Checking status again..."
-        if [ "{$UPLOAD:-false}" == "false" ]; then
-            if [ "{$ENCODE:-false}" == "true" ]; then
+        if [ "${UPLOAD:-false}" == "false" ]; then
+            if [ "${ENCODE:-false}" == "true" ]; then
                 mv "$outfile" "$ENCODE_DIR/$FILENAME"
                 echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
             else
@@ -247,7 +247,7 @@ elif [ $MODE == "kick" ]; then
 
         # Optional: minimal sanitization to strip slashes only
         safe_title=${title//\//-}
-        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id} .ts"
+        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}.ts"
         outfile="$DOWNLOAD_DIR/$FILENAME"
 
         echo "[Monitor] $CHANNEL is LIVE on Kick!"
@@ -270,8 +270,8 @@ elif [ $MODE == "kick" ]; then
             "kick.com/${CHANNEL}" best
 
         echo "[Monitor] Streamlink completed. Checking status again..."
-        if [ "{$UPLOAD:-false}" == "false" ]; then
-            if [ "{$ENCODE:-false}" == "true" ]; then
+        if [ "${UPLOAD:-false}" == "false" ]; then
+            if [ "${ENCODE:-false}" == "true" ]; then
                 mv "$outfile" "$ENCODE_DIR/$FILENAME"
                 echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
             else

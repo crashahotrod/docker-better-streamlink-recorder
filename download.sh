@@ -198,6 +198,9 @@ if [ $MODE == "twitch" ]; then
             notify_discord "**${CHANNEL} is LIVE!**\nTitle: ${title}"
         fi
 
+        #Initialize browser for streamlink (Any URL)
+        /usr/bin/chromium --verbose --headless --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
+
         /usr/local/bin/streamlink \
             --retry-streams 30 \
             -l debug \
@@ -253,6 +256,9 @@ elif [ $MODE == "kick" ]; then
         if [ "${DISCORD_WEBHOOK_URL:-}" != "" ]; then
             notify_discord "**${CHANNEL} is LIVE!**\nTitle: ${title}"
         fi
+
+        #Initialize browser for streamlink (Any URL)
+        /usr/bin/chromium --verbose --headless --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
 
         /usr/local/bin/streamlink \
             --retry-streams 30 \

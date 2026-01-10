@@ -206,6 +206,7 @@ if [ $MODE == "twitch" ]; then
         fi
 
         #Initialize browser for streamlink (Any URL)
+        export CHROMIUM_FLAGS="--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu"
         /usr/bin/chromium --verbose --headless --no-sandbox --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
 
         if [ "${REMUX:-false}" == "true" ]; then
@@ -290,6 +291,7 @@ elif [ $MODE == "kick" ]; then
         fi
 
         #Initialize browser for streamlink (Any URL)
+        export CHROMIUM_FLAGS="--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu"
         /usr/bin/chromium --verbose --headless --no-sandbox --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
 
         if [ "${REMUX:-false}" == "true" ]; then

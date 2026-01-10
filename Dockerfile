@@ -15,6 +15,7 @@ ENV streamlinkCommit=1dddb6b887f0a3b9fb33c43f43d4edd6e98f849b
 ENV CHROME_BIN=/usr/bin/chromium CHROME_PATH=/usr/lib/chromium/
 RUN pip3 install --upgrade git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
 RUN sed -i '/arguments.extend(\[/a \                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",' /usr/local/lib/python3.12/site-packages/streamlink/webbrowser/chromium.py
+RUN dbus-uuidgen > /etc/machine-id
 RUN mkdir -p /config
 RUN mkdir -p /storage
 RUN mkdir -p /etc/streamlink/tools

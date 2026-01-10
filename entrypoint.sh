@@ -67,9 +67,13 @@ chown -R "$USER_NAME:$USER_NAME" /etc/supervisor/conf.d/
 chmod 444 /etc/supervisor/conf.d/supervisord.conf
 chmod 666 /dev/stdout /dev/stderr
 mkdir -p /etc/streamlink/scratch/$MODE/$CHANNEL/{encode,download}
-DBUS_VARS=$(dbus-launch --sh-syntax)
-eval "$DBUS_VARS"
-export DBUS_SESSION_BUS_ADDRESS
-export DBUS_SESSION_BUS_PID
+DBUS_OUTPUT=$(dbus-launch --sh-syntax)
+if [ -z "$DBUS_OUTPUT" ]; then
+    echo "Error: dbus-launch failed to return output"
+else
+    eval "$DBUS_OUTPUT"
+    echo "DBus Started - Address: $DBUS_SESSION_BUS_ADDRESS"
+    echo "DBus Started - PID: $DBUS_SESSION_BUS_PID"
+fi
 echo "Starting application as $USER_NAME (UID: $(id -u $USER_NAME))..."
 exec gosu $USER_NAME "$@"

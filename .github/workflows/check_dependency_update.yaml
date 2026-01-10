@@ -26,7 +26,10 @@ jobs:
         MAX_ATTEMPTS=3
         ATTEMPT=1
         while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-          RESPONSE=$(curl -s -w "\n%{http_code}" "https://api.github.com/repos/${{ env.REPO_A_OWNER }}/${{ env.REPO_A_NAME }}/commits/${{ env.REPO_A_BRANCH }}")
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ env.REPO_A_OWNER }}/${{ env.REPO_A_NAME }}/commits/${{ env.REPO_A_BRANCH }}")
           HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
           BODY=$(echo "$RESPONSE" | sed '$d')
           if [ "$HTTP_STATUS" -eq 200 ]; then
@@ -63,7 +66,10 @@ jobs:
         MAX_ATTEMPTS=3
         ATTEMPT=1
         while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-          RESPONSE=$(curl -s -w "\n%{http_code}" "https://api.github.com/repos/porjo/youtubeuploader/releases/latest")
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/porjo/youtubeuploader/releases/latest")
           HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
           BODY=$(echo "$RESPONSE" | sed '$d')
           if [ "$HTTP_STATUS" -eq 200 ]; then

@@ -188,8 +188,15 @@ if [ $MODE == "twitch" ]; then
 
         # Optional: minimal sanitization to strip slashes only
         safe_title=${title//\//-}
-        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id} .ts"
-        outfile="$DOWNLOAD_DIR/$FILENAME"
+        if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
+            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}.mp4"
+            FOLDERDATE=$(date +%Y%m)
+            mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
+            outfile="$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
+        else
+            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id} .ts"
+            outfile="$DOWNLOAD_DIR/$FILENAME"
+         fi
 
         echo "[Monitor] $CHANNEL is LIVE on Twitch!"
         echo "[Monitor] Title: $title"
@@ -201,29 +208,47 @@ if [ $MODE == "twitch" ]; then
         #Initialize browser for streamlink (Any URL)
         /usr/bin/chromium --verbose --headless --no-sandbox --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
 
-        /usr/local/bin/streamlink \
-            --retry-streams 30 \
-            -l debug \
-            --output "$outfile" \
-            --twitch-force-client-integrity \
-            --twitch-api-header "Authorization=OAuth $TWITCH_USER_TOKEN"\
-            --webbrowser true \
-            --webbrowser-headless true \
-            $HLS_DURATION \
-            "twitch.tv/${CHANNEL}" best
-
-        echo "[Monitor] Streamlink completed. Checking status again..."
-        if [ "${UPLOAD:-false}" == "false" ]; then
-            if [ "${ENCODE:-false}" == "true" ]; then
-                mv "$outfile" "$ENCODE_DIR/$FILENAME"
-                echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
-            else
-                FOLDERDATE=$(date +%Y%m)
-                mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
-                mv "$outfile" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                echo moved "$outfile" to "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
+        if [ "${REMUX:-false}" == "true" ]; then
+            /usr/local/bin/streamlink \
+                --stdout \
+                --retry-streams 30 \
+                -l debug \
+                --twitch-force-client-integrity \
+                --twitch-api-header "Authorization=OAuth $TWITCH_USER_TOKEN"\
+                --webbrowser true \
+                --webbrowser-headless true \
+                $HLS_DURATION \
+                "twitch.tv/${CHANNEL}" best | ffmpeg -i pipe:0 -c copy "$outfile"
+            STREAMTITLE="$(echo $FILENAME | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - | - \{[^}]*\}| - [0-9]+|\.(ts|mp4)$//g; s/</＜/g; s/>/＞/g')"
+            if [ "${UPLOAD:-false}" == "false" ]; then #Only run when not uploading to avoid triggering upload again
+                echo "Will try and execute exiftool -title=\"$STREAMTITLE\" -api largefilesupport=1 -overwrite_original \"$outfile\""
+                exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$outfile"
+            fi
+        else
+            /usr/local/bin/streamlink \
+                --retry-streams 30 \
+                -l debug \
+                --output "$outfile" \
+                --twitch-force-client-integrity \
+                --twitch-api-header "Authorization=OAuth $TWITCH_USER_TOKEN"\
+                --webbrowser true \
+                --webbrowser-headless true \
+                $HLS_DURATION \
+                "twitch.tv/${CHANNEL}" best $REMUX_CMD
+            if [ "${UPLOAD:-false}" == "false" ]; then
+                if [ "${ENCODE:-false}" == "true" ]; then
+                    mv "$outfile" "$ENCODE_DIR/$FILENAME"
+                    echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
+                else
+                    FOLDERDATE=$(date +%Y%m)
+                    mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
+                    mv "$outfile" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
+                    echo moved "$outfile" to "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
+                fi
             fi
         fi
+
+        echo "[Monitor] Streamlink completed. Checking status again..."
         sleep "$CHECK_INTERVAL"
     done
 elif [ $MODE == "kick" ]; then
@@ -247,8 +272,15 @@ elif [ $MODE == "kick" ]; then
 
         # Optional: minimal sanitization to strip slashes only
         safe_title=${title//\//-}
-        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}.ts"
-        outfile="$DOWNLOAD_DIR/$FILENAME"
+        if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
+            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}.mp4"
+            FOLDERDATE=$(date +%Y%m)
+            mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
+            outfile="$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
+        else
+            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id} .ts"
+            outfile="$DOWNLOAD_DIR/$FILENAME"
+        fi
 
         echo "[Monitor] $CHANNEL is LIVE on Kick!"
         echo "[Monitor] Title: $title"
@@ -260,27 +292,41 @@ elif [ $MODE == "kick" ]; then
         #Initialize browser for streamlink (Any URL)
         /usr/bin/chromium --verbose --headless --no-sandbox --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
 
-        /usr/local/bin/streamlink \
-            --retry-streams 30 \
-            -l debug \
-            --output "$outfile" \
-            --webbrowser true \
-            --webbrowser-headless true \
-            $HLS_DURATION \
-            "kick.com/${CHANNEL}" best
-
-        echo "[Monitor] Streamlink completed. Checking status again..."
-        if [ "${UPLOAD:-false}" == "false" ]; then
-            if [ "${ENCODE:-false}" == "true" ]; then
-                mv "$outfile" "$ENCODE_DIR/$FILENAME"
-                echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
-            else
-                FOLDERDATE=$(date +%Y%m)
-                mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
-                mv "$outfile" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                echo moved "$outfile" to "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
+        if [ "${REMUX:-false}" == "true" ]; then
+            /usr/local/bin/streamlink \
+                --stdout \
+                --retry-streams 30 \
+                -l debug \
+                --webbrowser true \
+                --webbrowser-headless true \
+                $HLS_DURATION \
+                "kick.com/${CHANNEL}" best | ffmpeg -i pipe:0 ffmpeg -i pipe:0 -c copy "$outfile"
+            STREAMTITLE="$(echo "$FILENAME" | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - | - \{[^}]*\}| - [0-9]+|\.(ts|mp4)$//g; s/</＜/g; s/>/＞/g')"
+            echo "Will try and execute exiftool -title=\"$STREAMTITLE\" -api largefilesupport=1 -overwrite_original \"$outfile\""
+            exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$outfile"
+        else
+            /usr/local/bin/streamlink \
+                --retry-streams 30 \
+                -l debug \
+                --output "$outfile" \
+                --webbrowser true \
+                --webbrowser-headless true \
+                $HLS_DURATION \
+                "kick.com/${CHANNEL}" best
+            if [ "${UPLOAD:-false}" == "false" ]; then
+                if [ "${ENCODE:-false}" == "true" ]; then
+                    mv "$outfile" "$ENCODE_DIR/$FILENAME"
+                    echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
+                else
+                    FOLDERDATE=$(date +%Y%m)
+                    mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
+                    mv "$outfile" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
+                    echo moved "$outfile" to "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
+                fi
             fi
         fi
+
+        echo "[Monitor] Streamlink completed. Checking status again..."
         sleep "$CHECK_INTERVAL"
     done
 else

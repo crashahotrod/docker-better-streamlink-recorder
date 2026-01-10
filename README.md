@@ -20,7 +20,9 @@ https://hub.docker.com/r/crashahotrod/docker-better-streamlink-recorder
 
 
 ### Optional
-'ENCODE' - Flag to enable or disable re-encode to H.264 medium preset set to (true or false)
+'REMUX' - Flag to enable or disable live remux to mp4 (true or false)
+
+'ENCODE' - Flag to enable or disable after record re-encode to H.264 medium preset set to (true or false)
 
 'UPLOAD' - Flag to enable or disable upload to YouTube set to (true or false)
 

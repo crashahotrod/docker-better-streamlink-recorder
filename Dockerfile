@@ -25,7 +25,7 @@ COPY ./upload.sh /etc/streamlink/tools/
 COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /etc/streamlink/tools/*.sh /usr/local/bin/entrypoint.sh
-RUN sed -i '/arguments.extend(\[/a \                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",' /usr/local/lib/python3.12/site-packages/streamlink/webbrowser/webbrowser.py
+RUN sed -i '/arguments.extend(\[/a \                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",' /usr/local/lib/python3.12/site-packages/streamlink/webbrowser/chromium.py
 ENV DBUS_SESSION_BUS_ADDRESS=/dev/null
 
 ENTRYPOINT ["entrypoint.sh"]

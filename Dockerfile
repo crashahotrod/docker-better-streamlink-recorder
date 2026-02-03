@@ -11,7 +11,7 @@ ARG BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/downl
 RUN apt-get update && apt-get install -y supervisor python3-pip jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini && rm -rf /var/lib/apt/lists/*
 RUN curl -L -o youtubeuploader.tar.gz "${BINARY_DOWNLOAD_URL}"
 RUN tar -xzf youtubeuploader.tar.gz -C /etc youtubeuploader
-ENV streamlinkCommit=becd2efa305005b71a5857a3ef2fac0c3436383e
+ENV streamlinkCommit=ba57b51b8fb7e4b15d67f88cd570da5d3d77d730
 ENV CHROME_BIN=/usr/bin/chromium CHROME_PATH=/usr/lib/chromium/
 RUN pip3 install --upgrade git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
 RUN sed -i '/arguments.extend(\[/a \                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",' /usr/local/lib/python3.12/site-packages/streamlink/webbrowser/chromium.py

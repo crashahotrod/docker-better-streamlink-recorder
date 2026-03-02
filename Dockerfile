@@ -8,8 +8,14 @@ RUN groupadd -g ${GROUP_ID} ${USER_NAME} && useradd -u ${USER_ID} -g ${USER_NAME
 ARG YTU_RELEASE=v1.25.5
 ARG YTU_SHORT="${YTU_RELEASE#v}"
 ARG TARGETARCH
-# Download the youtubeuploader release matching the target architecture (amd64 vs arm64)
-RUN if [ "${TARGETARCH}" = "arm64" ] || [ "${TARGETARCH}" = "aarch64" ] ; then ARCH=arm64; else ARCH=amd64; fi && \
+# Download the youtubeuploader release matching the target architecture (amd64, arm64, armv7, armv6)
+RUN case "${TARGETARCH}" in \
+        "amd64") ARCH="amd64" ;; \
+        "arm64"|"aarch64") ARCH="arm64" ;; \
+        "arm") \
+            ARCH="arm${TARGETVARIANT}" ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}"; exit 1 ;; \
+    esac && \
     BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/download/${YTU_RELEASE}/youtubeuploader_${YTU_SHORT}_Linux_${ARCH}.tar.gz" && \
     curl -L -o youtubeuploader.tar.gz "${BINARY_DOWNLOAD_URL}" && \
     tar -xzf youtubeuploader.tar.gz -C /etc youtubeuploader && rm -f youtubeuploader.tar.gz

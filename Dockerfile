@@ -8,6 +8,7 @@ RUN groupadd -g ${GROUP_ID} ${USER_NAME} && useradd -u ${USER_ID} -g ${USER_NAME
 ARG YTU_RELEASE=v1.25.5
 ARG YTU_SHORT="${YTU_RELEASE#v}"
 ARG TARGETARCH
+ARG TARGETVARIANT
 # Download the youtubeuploader release matching the target architecture (amd64, arm64, armv7, armv6)
 RUN case "${TARGETARCH}" in \
         "amd64") ARCH="amd64" ;; \

@@ -300,7 +300,7 @@ elif [ $MODE == "kick" ]; then
                 --webbrowser true \
                 --webbrowser-headless true \
                 $HLS_DURATION \
-                "kick.com/${CHANNEL}" best | ffmpeg -i pipe:0 ffmpeg -i pipe:0 -c copy "$outfile"
+                "kick.com/${CHANNEL}" best | ffmpeg -i pipe:0 -c copy "$outfile"
             STREAMTITLE="$(echo "$FILENAME" | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - | - \{[^}]*\}| - [0-9]+|\.(ts|mp4)$//g; s/</＜/g; s/>/＞/g')"
             echo "Will try and execute exiftool -title=\"$STREAMTITLE\" -api largefilesupport=1 -overwrite_original \"$outfile\""
             exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$outfile"

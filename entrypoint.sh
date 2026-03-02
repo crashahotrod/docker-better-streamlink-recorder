@@ -20,7 +20,7 @@ if [ $MODE == "twitch" ]; then
 fi
 
 mkdir -p /config /storage /etc/streamlink/scratch
-chown -R "$USER_NAME:$USER_NAME" /config /storage /etc/streamlink/scratch
+chown -R "$USER_NAME:$USER_NAME" /config /storage /etc/streamlink/scratch /var/log/streamlink
 
 check_required_dir() {
     local dir_name="$1"

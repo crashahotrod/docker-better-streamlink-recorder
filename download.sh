@@ -234,7 +234,7 @@ if [ $MODE == "twitch" ]; then
                 --webbrowser true \
                 --webbrowser-headless true \
                 $HLS_DURATION \
-                "twitch.tv/${CHANNEL}" best $REMUX_CMD
+                "twitch.tv/${CHANNEL}" best
             if [ "${UPLOAD:-false}" == "false" ]; then
                 if [ "${ENCODE:-false}" == "true" ]; then
                     mv "$outfile" "$ENCODE_DIR/$FILENAME"

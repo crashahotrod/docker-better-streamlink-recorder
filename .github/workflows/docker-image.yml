@@ -37,7 +37,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }},priority=1000
             type=ref,event=branch,priority=800
-            type=sha,format=short,priority=600
+            type=sha,format=short,priority=600,enable=false
 
       - name: Cache Docker layers
         uses: actions/cache@v4

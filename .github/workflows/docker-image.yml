@@ -35,9 +35,9 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKERHUB_PROJECT_NAME }}
             ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-            type=ref,event=branch
-            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }},priority=1000
+            type=ref,event=branch,priority=800
+            type=sha,format=short,priority=600
 
       - name: Cache Docker layers
         uses: actions/cache@v4
@@ -75,7 +75,7 @@ jobs:
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          package-name: ${{ github.event.repository.name }}
+          package: ${{ github.event.repository.name }}
           keep-n-tagged: 5
           delete-untagged: true
           older-than: 90 days

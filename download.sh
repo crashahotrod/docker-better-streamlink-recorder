@@ -278,6 +278,7 @@ elif [ $MODE == "kick" ]; then
         folder_date=$(date +%Y%m)
         episode_date=$(date +%d%H)
         safe_title="${title//\//-}"
+        
         FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
         current_bytes=$(echo -n "$FILENAME" | wc -c)
         max_bytes=250
@@ -286,7 +287,13 @@ elif [ $MODE == "kick" ]; then
             overage=$((current_bytes - max_bytes))
             title_bytes=$(echo -n "$safe_title" | wc -c)
             new_title_length=$((title_bytes - overage))
+            echo "New title length"
+            echo "$new_title_length"
+            echo "Original:"
+            echo "$safe_title"
             safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 --byte-subst="" 2>/dev/null)
+            echo "Edited:"
+            echo "$safe_title"
             FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
         fi
         echo "After title fix"

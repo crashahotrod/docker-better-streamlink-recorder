@@ -68,13 +68,28 @@ chmod 444 /etc/supervisor/conf.d/supervisord.conf
 chmod 666 /dev/stdout /dev/stderr
 chown "$USER_NAME:$USER_NAME" /var/run/dbus
 mkdir -p /etc/streamlink/scratch/$MODE/$CHANNEL/{encode,download}
-if [ "{$DBUS:-false}" == "true" ]; then
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] || [ ! -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ]; then
+    echo "Initializing D-Bus session not found..."
+    [ -n "$DBUS_SESSION_BUS_ADDRESS" ] && echo "Session bus variable present: true ($DBUS_SESSION_BUS_ADDRESS)" || echo "Session bus variable present: false"
+    [ -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ] && echo "Session bus socket present: true ($DBUS_SESSION_BUS_ADDRESS)" || echo "Session bus socket present: false"
+    rm -f /tmp/dbus_env
     mkdir -p /var/run/dbus
+    chown $USER_NAME:$USER_NAME /var/run/dbus
     gosu $USER_NAME dbus-launch --sh-syntax > /tmp/dbus_env
     if [ -f /tmp/dbus_env ]; then
         . /tmp/dbus_env
         export DBUS_SESSION_BUS_ADDRESS
         export DBUS_SESSION_BUS_PID
+        mkdir -p /run/dbus
+        if [ -z "$DBUS_SYSTEM_BUS_ADDRESS" ] || [ ! -S "/run/dbus/system_bus_socket" ]; then
+            echo "System bus not found. Redirecting to Session Bus..."
+            [ -n "$DBUS_SYSTEM_BUS_ADDRESS" ] && echo "System bus variable present: true ($DBUS_SYSTEM_BUS_ADDRESS)" || echo "System bus variable present: false"
+            [ -S "/run/dbus/system_bus_socket" ] && echo "System bus socket present: true ($DBUS_SYSTEM_BUS_ADDRESS)" || echo "System bus socket present: false"
+            ln -sf "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" /run/dbus/system_bus_socket
+            export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
+        else
+            echo "System bus already exists. Skipping redirection."
+        fi
         echo "DBus started for $USER_NAME user at: $DBUS_SESSION_BUS_ADDRESS"
     fi
 fi

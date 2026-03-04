@@ -278,7 +278,6 @@ elif [ $MODE == "kick" ]; then
         folder_date=$(date +%Y%m)
         episode_date=$(date +%d%H)
         safe_title="${title//\//-}"
-        
         FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
         current_bytes=$(echo -n "$FILENAME" | wc -c)
         max_bytes=250

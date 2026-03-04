@@ -128,7 +128,7 @@ get_kick_channel_info() {
     http_code=$(curl -s -o "$tmp_body" -w "%{http_code}" \
         -H "Authorization: Bearer ${ACCESS_TOKEN}" \
         "https://api.kick.com/public/v1/channels?slug=${CHANNEL}")
-
+    echo "[Debug] Kick API Response: $(cat "$tmp_body")" >&2
     if [[ "$http_code" != "200" ]]; then
         echo "[Kick] Unexpected HTTP code from Kick: ${http_code}" >&2
         echo "{}"   # valid JSON so jq won't explode
@@ -137,6 +137,7 @@ get_kick_channel_info() {
     fi
 
     # Only JSON body to stdout
+
     cat "$tmp_body"
     rm -f "$tmp_body"
 }
@@ -182,19 +183,27 @@ if [ $MODE == "twitch" ]; then
         title=$(echo "$json" | jq -r '.data[0].title')
         stream_id=$(echo "$json" | jq -r '.data[0].id')
         author=$(echo "$json" | jq -r '.data[0].user_name')
-
         folder_date=$(date +%Y%m)
         episode_date=$(date +%d%H)
-
-        # Optional: minimal sanitization to strip slashes only
-        safe_title=${title//\//-}
+        safe_title="${title//\//-}"
+        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
+        current_bytes=$(echo -n "$FILENAME" | wc -c)
+        max_bytes=250
+        if [ "$current_bytes" -gt "$max_bytes" ]; then
+            overage=$((current_bytes - max_bytes))
+            title_bytes=$(echo -n "$safe_title" | wc -c)
+            new_title_length=$((title_bytes - overage))
+            safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
+        fi
         if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}.mp4"
+            FILENAME="${FILENAME}.mp4"
             FOLDERDATE=$(date +%Y%m)
             mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
             outfile="$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
         else
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id} .ts"
+            FILENAME="${FILENAME}.ts"
+            mkdir -p "$DOWNLOAD_DIR"
             outfile="$DOWNLOAD_DIR/$FILENAME"
          fi
 
@@ -255,8 +264,8 @@ elif [ $MODE == "kick" ]; then
     while true; do
         ensure_kick_token
         json=$(get_kick_channel_info 2>/dev/null)
-        live=$(echo "$json" | jq '.data[0].stream.is_live')
-        if [ $live != "true" ]; then
+        live=$(echo "$json" | jq -r '.data[0].stream.is_live // "false"')
+        if [ "$live" != "true" ]; then
             echo "[Monitor] Channel ${CHANNEL} not live. Checking again in ${CHECK_INTERVAL}s."
             sleep "$CHECK_INTERVAL"
             continue
@@ -266,19 +275,29 @@ elif [ $MODE == "kick" ]; then
         title=$(echo "$json" | jq -r '.data[0].stream_title')
         stream_id=$(date -d "$(echo "$json" | jq -r '.data[0].stream.start_time')" +%s)
         author=$(echo "$json" | jq -r '.data[0].slug')
-
         folder_date=$(date +%Y%m)
         episode_date=$(date +%d%H)
-
-        # Optional: minimal sanitization to strip slashes only
-        safe_title=${title//\//-}
+        safe_title="${title//\//-}"
+        
+        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
+        current_bytes=$(echo -n "$FILENAME" | wc -c)
+        max_bytes=250
+        if [ "$current_bytes" -gt "$max_bytes" ]; then
+            overage=$((current_bytes - max_bytes))
+            title_bytes=$(echo -n "$safe_title" | wc -c)
+            new_title_length=$((title_bytes - overage))
+            echo "$new_title_length"
+            safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
+        fi
         if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}.mp4"
+            FILENAME="${FILENAME}.mp4"
             FOLDERDATE=$(date +%Y%m)
             mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
             outfile="$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
         else
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id} .ts"
+            FILENAME="${FILENAME}.ts"
+            mkdir -p "$DOWNLOAD_DIR"
             outfile="$DOWNLOAD_DIR/$FILENAME"
         fi
 

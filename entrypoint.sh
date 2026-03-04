@@ -68,13 +68,15 @@ chmod 444 /etc/supervisor/conf.d/supervisord.conf
 chmod 666 /dev/stdout /dev/stderr
 chown "$USER_NAME:$USER_NAME" /var/run/dbus
 mkdir -p /etc/streamlink/scratch/$MODE/$CHANNEL/{encode,download}
-mkdir -p /var/run/dbus
-gosu $USER_NAME dbus-launch --sh-syntax > /tmp/dbus_env
-if [ -f /tmp/dbus_env ]; then
-    . /tmp/dbus_env
-    export DBUS_SESSION_BUS_ADDRESS
-    export DBUS_SESSION_BUS_PID
-    echo "DBus started for $USER_NAME user at: $DBUS_SESSION_BUS_ADDRESS"
+if [ "{$DBUS:-false}" == "true" ]; then
+    mkdir -p /var/run/dbus
+    gosu $USER_NAME dbus-launch --sh-syntax > /tmp/dbus_env
+    if [ -f /tmp/dbus_env ]; then
+        . /tmp/dbus_env
+        export DBUS_SESSION_BUS_ADDRESS
+        export DBUS_SESSION_BUS_PID
+        echo "DBus started for $USER_NAME user at: $DBUS_SESSION_BUS_ADDRESS"
+    fi
 fi
 echo "Starting application as $USER_NAME (UID: $(id -u $USER_NAME))..."
 exec gosu $USER_NAME "$@"

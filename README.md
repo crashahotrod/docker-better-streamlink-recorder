@@ -20,15 +20,19 @@ https://hub.docker.com/r/crashahotrod/docker-better-streamlink-recorder
 
 
 ### Optional
-'REMUX' - Flag to enable or disable live remux to mp4 (true or false)
+\* Denotes default
 
-'ENCODE' - Flag to enable or disable after record re-encode to H.264 medium preset set to (true or false)
+'DBUS' - Flag to enable or disable emulated dbus. Useful on hosts not exposing the host dbus. (true or *false) 
 
-'UPLOAD' - Flag to enable or disable upload to YouTube set to (true or false)
+'REMUX' - Flag to enable or disable live remux to mp4 (true or *false)
+
+'ENCODE' - Flag to enable or disable after record re-encode to H.264 medium preset set to (true or *false)
+
+'UPLOAD' - Flag to enable or disable upload to YouTube set to (true or *false)
 
 'UPLOAD_BOT_NAME' - Set to the name of the bot you'd like to add to the YouTube description
 
-'YOUTUBE_SPLITTING' - Flag to enable 12hr splitting of recording for YouTube uploads (true or false)
+'YOUTUBE_SPLITTING' - Flag to enable 12hr splitting of recording for YouTube uploads (true or *false)
 
 'DISCORD_WEBHOOK_URL' - Set to the full URL of the Discord Webhook you'd like to use for go live notifications
 

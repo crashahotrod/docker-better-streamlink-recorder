@@ -68,8 +68,12 @@ chmod 444 /etc/supervisor/conf.d/supervisord.conf
 chmod 666 /dev/stdout /dev/stderr
 chown "$USER_NAME:$USER_NAME" /var/run/dbus
 mkdir -p /etc/streamlink/scratch/$MODE/$CHANNEL/{encode,download}
-if [ "{$DBUS:-false}" == "true" ]; then
+if [ "${DBUS:-false}" == "true" ] || [ -z "$DBUS_SESSION_BUS_ADDRESS" ] || [ ! -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ]; then
+    echo "Initializing D-Bus session (forced or not found)..."
+    rm -f /tmp/dbus_env
+    [ -f "$DBUS_SESSION_BUS_PID" ] && kill -9 "$DBUS_SESSION_BUS_PID" 2>/dev/null || true
     mkdir -p /var/run/dbus
+    chown $USER_NAME:$USER_NAME /var/run/dbus
     gosu $USER_NAME dbus-launch --sh-syntax > /tmp/dbus_env
     if [ -f /tmp/dbus_env ]; then
         . /tmp/dbus_env

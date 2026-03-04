@@ -193,7 +193,7 @@ if [ $MODE == "twitch" ]; then
             overage=$((current_bytes - max_bytes))
             title_bytes=$(echo -n "$safe_title" | wc -c)
             new_title_length=$((title_bytes - overage))
-            safe_title=$(echo -n "$safe_title" | cut -b 1-"$new_title_length" | iconv -f UTF-8 -t UTF-8 --byte-subst="" 2>/dev/null)
+            safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
             FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
         fi
         if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
@@ -282,21 +282,14 @@ elif [ $MODE == "kick" ]; then
         FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
         current_bytes=$(echo -n "$FILENAME" | wc -c)
         max_bytes=250
-        echo "Before title fix"
         if [ "$current_bytes" -gt "$max_bytes" ]; then
             overage=$((current_bytes - max_bytes))
             title_bytes=$(echo -n "$safe_title" | wc -c)
             new_title_length=$((title_bytes - overage))
-            echo "New title length"
             echo "$new_title_length"
-            echo "Original:"
-            echo "$safe_title"
-            safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 --byte-subst="" 2>/dev/null)
-            echo "Edited:"
-            echo "$safe_title"
+            safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
             FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
         fi
-        echo "After title fix"
         if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
             FILENAME="${FILENAME}.mp4"
             FOLDERDATE=$(date +%Y%m)

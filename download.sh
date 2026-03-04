@@ -182,19 +182,26 @@ if [ $MODE == "twitch" ]; then
         title=$(echo "$json" | jq -r '.data[0].title')
         stream_id=$(echo "$json" | jq -r '.data[0].id')
         author=$(echo "$json" | jq -r '.data[0].user_name')
-
         folder_date=$(date +%Y%m)
         episode_date=$(date +%d%H)
-
-        # Optional: minimal sanitization to strip slashes only
         safe_title=${title//\//-}
+        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
+        current_bytes=$(echo -n "$FILENAME" | wc -c)
+        max_bytes=250
+        if [ "$current_bytes" -gt "$max_bytes" ]; then
+            overage=$((current_bytes - max_bytes))
+            title_bytes=$(echo -n "$safe_title" | wc -c)
+            new_title_length=$((title_bytes - overage))
+            safe_title=$(echo -n "$safe_title" | cut -b 1-"$new_title_length" | iconv -f UTF-8 -t UTF-8 --byte-subst="" 2>/dev/null)
+            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
+        fi
         if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}.mp4"
+            FILENAME="${FILENAME}.mp4"
             FOLDERDATE=$(date +%Y%m)
             mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
             outfile="$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
         else
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id} .ts"
+            FILENAME="${FILENAME}.ts"
             outfile="$DOWNLOAD_DIR/$FILENAME"
          fi
 
@@ -266,19 +273,26 @@ elif [ $MODE == "kick" ]; then
         title=$(echo "$json" | jq -r '.data[0].stream_title')
         stream_id=$(date -d "$(echo "$json" | jq -r '.data[0].stream.start_time')" +%s)
         author=$(echo "$json" | jq -r '.data[0].slug')
-
         folder_date=$(date +%Y%m)
         episode_date=$(date +%d%H)
-
-        # Optional: minimal sanitization to strip slashes only
         safe_title=${title//\//-}
+        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
+        current_bytes=$(echo -n "$FILENAME" | wc -c)
+        max_bytes=250
+        if [ "$current_bytes" -gt "$max_bytes" ]; then
+            overage=$((current_bytes - max_bytes))
+            title_bytes=$(echo -n "$safe_title" | wc -c)
+            new_title_length=$((title_bytes - overage))
+            safe_title=$(echo -n "$safe_title" | cut -b 1-"$new_title_length" | iconv -f UTF-8 -t UTF-8 --byte-subst="" 2>/dev/null)
+            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
+        fi
         if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}.mp4"
+            FILENAME="${FILENAME}.mp4"
             FOLDERDATE=$(date +%Y%m)
             mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
             outfile="$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
         else
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id} .ts"
+            FILENAME="${FILENAME}.ts"
             outfile="$DOWNLOAD_DIR/$FILENAME"
         fi
 

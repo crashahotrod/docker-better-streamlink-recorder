@@ -22,8 +22,6 @@ https://hub.docker.com/r/crashahotrod/docker-better-streamlink-recorder
 ### Optional
 \* Denotes default
 
-'DBUS' - Flag to enable or disable emulated dbus. Useful on hosts not exposing the host dbus. (true or *false) 
-
 'REMUX' - Flag to enable or disable live remux to mp4 (true or *false)
 
 'ENCODE' - Flag to enable or disable after record re-encode to H.264 medium preset set to (true or *false)

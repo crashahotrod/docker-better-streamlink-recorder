@@ -283,17 +283,11 @@ elif [ $MODE == "kick" ]; then
         max_bytes=250
         echo "Before title fix"
         if [ "$current_bytes" -gt "$max_bytes" ]; then
-            echo "Inside if statement"
             overage=$((current_bytes - max_bytes))
-            echo "Overage past"
             title_bytes=$(echo -n "$safe_title" | wc -c)
-            echo "Title_bytes past"
             new_title_length=$((title_bytes - overage))
-            echo "New_title length past"
-            safe_title=$(echo -n "$safe_title" | cut -b 1-"$new_title_length" | iconv -f UTF-8 -t UTF-8 --byte-subst="" 2>/dev/null)
-            echo "Safe_title past"
+            safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 --byte-subst="" 2>/dev/null)
             FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
-            echo "Filename past"
         fi
         echo "After title fix"
         if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then

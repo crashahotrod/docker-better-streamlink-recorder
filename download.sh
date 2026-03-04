@@ -128,7 +128,7 @@ get_kick_channel_info() {
     http_code=$(curl -s -o "$tmp_body" -w "%{http_code}" \
         -H "Authorization: Bearer ${ACCESS_TOKEN}" \
         "https://api.kick.com/public/v1/channels?slug=${CHANNEL}")
-
+    echo "[Debug] Kick API Response: $(cat "$tmp_body")" >&2
     if [[ "$http_code" != "200" ]]; then
         echo "[Kick] Unexpected HTTP code from Kick: ${http_code}" >&2
         echo "{}"   # valid JSON so jq won't explode
@@ -137,6 +137,7 @@ get_kick_channel_info() {
     fi
 
     # Only JSON body to stdout
+
     cat "$tmp_body"
     rm -f "$tmp_body"
 }
@@ -263,6 +264,8 @@ elif [ $MODE == "kick" ]; then
         ensure_kick_token
         json=$(get_kick_channel_info 2>/dev/null)
         live=$(echo "$json" | jq -r '.data[0].stream.is_live // "false"')
+        echo "[Debug] Live Variable Value: '$live'" >&2
+        echo "[Debug] JSON Data Length: $(echo "$json" | jq '.data | length')" >&2
         if [ "$live" != "true" ]; then
             echo "[Monitor] Channel ${CHANNEL} not live. Checking again in ${CHECK_INTERVAL}s."
             sleep "$CHECK_INTERVAL"
@@ -276,6 +279,7 @@ elif [ $MODE == "kick" ]; then
         folder_date=$(date +%Y%m)
         episode_date=$(date +%d%H)
         safe_title=${title//\//-}
+        echo "[Debug] Constructing Filename with: Author=$author, Title=$title, ID=$stream_id" >&2
         FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
         current_bytes=$(echo -n "$FILENAME" | wc -c)
         max_bytes=250

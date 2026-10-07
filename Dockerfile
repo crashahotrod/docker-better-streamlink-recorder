@@ -21,7 +21,7 @@ RUN case "${TARGETARCH}" in \
     curl -L -o youtubeuploader.tar.gz "${BINARY_DOWNLOAD_URL}" && \
     tar -xzf youtubeuploader.tar.gz -C /etc youtubeuploader && rm -f youtubeuploader.tar.gz
 RUN apt-get update && apt-get install -y supervisor python3-pip jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini && rm -rf /var/lib/apt/lists/*
-ENV streamlinkCommit=a8a66ecc83fc4665423c771e6d976bce4e4dcf65
+ENV streamlinkCommit=8209b5b24b9cd18b218883facf9e29b4eac08453
 ENV CHROME_BIN=/usr/bin/chromium CHROME_PATH=/usr/lib/chromium/
 RUN pip3 install --upgrade git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
 RUN sed -i '/arguments.extend(\[/a \                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",' /usr/local/lib/python3.12/site-packages/streamlink/webbrowser/chromium.py

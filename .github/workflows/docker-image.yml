@@ -8,8 +8,34 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
+  checks:
+    name: Recording pipeline checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl jq shellcheck gosu supervisor
+      - name: Run shell and media checks
+        run: bash tests/run.sh
+      - name: Verify application user permissions
+        run: |
+          sudo useradd --create-home --user-group recorder-test
+          sudo TEST_APP_USER=recorder-test bash tests/test_permissions.sh
+      - name: Validate Compose sample
+        run: docker compose -f docker-compose.yml.sample config --quiet
+      - name: Build local test image
+        run: docker build -t streamlink-recorder:test .
+      - name: Check container startup without live services
+        run: bash tests/test_container.sh
+
   build-test-push:
     name: Build, Test and Push Docker Image
+    needs: checks
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read

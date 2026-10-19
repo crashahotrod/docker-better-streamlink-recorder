@@ -3,20 +3,24 @@ services:
     image: crashahotrod/docker-better-streamlink-recorder
     container_name: streamlinkrecorder
     environment:
-      - MODE=kickortwitch
+      - MODE=twitch # twitch or kick
       - CHANNEL=channelToMonitorHere
       - CLIENT_ID=yourClientID
       - CLIENT_SECRET=yourClientSecret
       #optional
-      - REMUX=trueorfalse
-      - ENCODE=trueorfalse
-      - UPLOAD=trueorfalse
-      - UPLOAD_BOT_NAME=name
-      - YOUTUBE_SPLITTING=trueorfalse
-      - DISCORD_WEBHOOK_URL=fullurlofdiscordwebhook
-      - TWITCH_USER_TOKEN=yourUserToken #Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
+      - REMUX=false
+      - ENCODE=false
+      - UPLOAD=false
+      # - UPLOAD_BOT_NAME=name # Required when UPLOAD=true
+      - YOUTUBE_SPLITTING=false
+      # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+      # - TWITCH_USER_TOKEN=yourUserToken #Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
     restart: always
     volumes:
       - "streamlink_scratch:/etc/streamlink/scratch"
       - "streamlink_storage:/storage"
       - "streamlink_config:/config"
+volumes:
+  streamlink_scratch:
+  streamlink_storage:
+  streamlink_config:

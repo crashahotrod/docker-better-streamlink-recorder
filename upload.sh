@@ -1,33 +1,39 @@
 #!/bin/bash
-MONITORDIR="/etc/streamlink/scratch/$MODE/$CHANNEL/download"
-ENCODE_DIR="/etc/streamlink/scratch/$MODE/$CHANNEL/encode"
-STORAGE_DIR="/storage"
-set +H
-inotifywait -m -r --format '%w%f' --include ".*\.(ts|mp4)$" -e close_write "$MONITORDIR" | while read NEWFILE
-do
-        if [[ $NEWFILE = *.fragmented.mp4* ]]; then
-                echo 'Skipping Fragmented File'
-        else
-                echo "$NEWFILE created"
-                FILENAME="$(basename "$NEWFILE")"
-                STREAMTITLE="$(echo "$FILENAME" | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - | - \{[^}]*\}| - [0-9]+|\.(ts|mp4)$//g; s/</＜/g; s/>/＞/g')"
-                echo "Stream title is: $STREAMTITLE"
-                UPLOADDATE="$(date +%m/%d/%Y)"
-                UPLOADTITLE="$UPLOADDATE - $STREAMTITLE"
-                echo "Upload Title is: $UPLOADTITLE"
-                /etc/youtubeuploader -title "$UPLOADTITLE" -privacy "public" -filename "$NEWFILE" -description "Uploaded Automatically by $UPLOAD_BOT_NAME"
-                sleep 2
-                echo "Finished YT Upload"
-                if [ "${ENCODE:-false}" == "true" ]; then
-                        mv "$outfile" "$ENCODE_DIR/$FILENAME"
-                        echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
-                else
-                        FOLDERDATE=$(date +%Y%m)
-                        mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
-                        mv "$NEWFILE" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                        echo moved "$NEWFILE" to "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                        echo "Will try and execute exiftool -title=\"$STREAMTITLE\" -api largefilesupport=1 -overwrite_original \"$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME\""
-                        exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                fi
+set -uo pipefail
+# shellcheck source=pipeline.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/pipeline.sh"
+
+invoke_uploader() {
+    timeout --signal=TERM --kill-after=30s 6h "${YOUTUBEUPLOADER_BIN:-/etc/youtubeuploader}" "$@"
+}
+
+upload_job() {
+    local job="$1" input title recorded_date encode
+    input=$(job_media "$job") && read_field "$job/title" title || return 1
+    read -r recorded_date < "$job/recorded-date" || return 1
+    if [[ ! -f "$job/uploaded" ]]; then
+        validate_media "$input" || return 1
+        if ! invoke_uploader -title "$recorded_date - $title" -privacy "${YOUTUBE_PRIVACY:-public}" \
+            -filename "$input" -description "Uploaded Automatically by ${UPLOAD_BOT_NAME:?}" \
+            -secrets "${CONFIG_DIR:-/config}/youtubeuploader_client_secrets.json" \
+            -cache "${CONFIG_DIR:-/config}/youtubeuploader_request.token" \
+            -metaJSONout "$job/remote.json"; then
+            log_failure 'Upload failed; recording retained' "$job"
+            return 1
         fi
-done
+        # Persist success before any local handoff. remote.json is retained for
+        # recovery; a crash before this marker can still require reconciliation.
+        write_state "$job/uploaded" true || return 1
+        printf '[Upload] Upload completed: %q\n' "$job"
+    fi
+    read -r encode < "$job/encode-required" || return 1
+    if [[ "$encode" == true ]]; then
+        advance_job "$job" encode
+    else
+        advance_job "$job" publish
+    fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    run_worker upload upload_job
+fi

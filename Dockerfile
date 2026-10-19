@@ -20,7 +20,7 @@ RUN case "${TARGETARCH}" in \
     BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/download/${YTU_RELEASE}/youtubeuploader_${YTU_SHORT}_Linux_${ARCH}.tar.gz" && \
     curl -L -o youtubeuploader.tar.gz "${BINARY_DOWNLOAD_URL}" && \
     tar -xzf youtubeuploader.tar.gz -C /etc youtubeuploader && rm -f youtubeuploader.tar.gz
-RUN apt-get update && apt-get install -y supervisor python3-pip jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y supervisor python3-pip jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini util-linux && rm -rf /var/lib/apt/lists/*
 ENV streamlinkCommit=b19cc05aff877e95b4aee2000401566a3ea4d5b5
 ENV CHROME_BIN=/usr/bin/chromium CHROME_PATH=/usr/lib/chromium/
 RUN pip3 install --upgrade git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
@@ -34,10 +34,12 @@ RUN mkdir -p /etc/streamlink/scratch
 RUN mkdir -p /var/run/dbus
 
 COPY ./download.sh /etc/streamlink/tools/
+COPY ./pipeline.sh ./publish.sh /etc/streamlink/tools/
 COPY ./encode.sh /etc/streamlink/tools/
 COPY ./upload.sh /etc/streamlink/tools/
 COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY pipeline.sh /usr/local/bin/pipeline.sh
 RUN chmod +x /etc/streamlink/tools/*.sh /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--","entrypoint.sh"]

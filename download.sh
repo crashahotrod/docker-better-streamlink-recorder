@@ -1,352 +1,140 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
+# shellcheck source=pipeline.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/pipeline.sh"
+ACCESS_TOKEN=''
+TOKEN_EXPIRES_AT=0
+CHECK_INTERVAL=30
 
-DOWNLOAD_DIR="/etc/streamlink/scratch/$MODE/$CHANNEL/download"
-ENCODE_DIR="/etc/streamlink/scratch/$MODE/$CHANNEL/encode"
-STORAGE_DIR="/storage"
-CHECK_INTERVAL=30   #seconds between live checks
-ACCESS_TOKEN=""
-TOKEN_EXPIRES_AT=0  # epoch timestamp
-
-# ------------------------------------------------------------
-# Function: get a new twitch token
-# ------------------------------------------------------------
-get_new_twitch_token() {
-    echo "[Twitch] Getting new app access token..." >&2
-    local now
+refresh_token() {
+    local endpoint response expires now
     now=$(date +%s)
-
-    local resp
-    resp=$(curl -s -X POST "https://id.twitch.tv/oauth2/token" \
-        -d "client_id=${CLIENT_ID}" \
-        -d "client_secret=${CLIENT_SECRET}" \
-        -d "grant_type=client_credentials")
-
-    ACCESS_TOKEN=$(echo "$resp" | jq -r '.access_token')
-    local expires_in
-    expires_in=$(echo "$resp" | jq -r '.expires_in')
-
-    TOKEN_EXPIRES_AT=$(( now + expires_in - 60 ))  # Refresh 1 min early
-
-    if [[ -z "$ACCESS_TOKEN" || "$ACCESS_TOKEN" == "null" ]]; then
-        echo "[Twitch] ERROR: Could not obtain token." >&2
-        exit 1
-    fi
-
-    echo "[Twitch] Token acquired, good until epoch ${TOKEN_EXPIRES_AT}" >&2
+    (( now < TOKEN_EXPIRES_AT )) && return 0
+    case "$MODE" in
+        twitch) endpoint=https://id.twitch.tv/oauth2/token ;;
+        kick) endpoint=https://id.kick.com/oauth/token ;;
+        *) return 1 ;;
+    esac
+    response=$(curl -fsS --connect-timeout 15 --max-time 60 -X POST "$endpoint" \
+        --data-urlencode "client_id=$CLIENT_ID" \
+        --data-urlencode "client_secret=$CLIENT_SECRET" \
+        -d grant_type=client_credentials 2>/dev/null) || return 1
+    ACCESS_TOKEN=$(jq -er '.access_token | select(type == "string" and length > 0)' <<< "$response") || return 1
+    expires=$(jq -er '.expires_in | select(type == "number" and . > 0)' <<< "$response") || return 1
+    [[ "$expires" =~ ^[0-9]+$ ]] || return 1
+    TOKEN_EXPIRES_AT=$((now + (expires > 60 ? expires - 60 : 1)))
 }
 
-# ------------------------------------------------------------
-# Function: ensure twitch token is valid
-# ------------------------------------------------------------
-ensure_twitch_token() {
-    local now
-    now=$(date +%s)
-
-    if (( now >= TOKEN_EXPIRES_AT )); then
-        get_new_twitch_token
+fetch_stream_info() {
+    local endpoint body status
+    local -a headers=(-H "Authorization: Bearer $ACCESS_TOKEN")
+    if [[ "$MODE" == twitch ]]; then
+        endpoint="https://api.twitch.tv/helix/streams?user_login=$CHANNEL"
+        headers+=(-H "Client-ID: $CLIENT_ID")
+    else
+        endpoint="https://api.kick.com/public/v1/channels?slug=$CHANNEL"
     fi
+    body=$(mktemp) || return 1
+    status=$(curl -s --connect-timeout 15 --max-time 60 -o "$body" -w '%{http_code}' \
+        "${headers[@]}" "$endpoint") || { rm -f -- "$body"; return 1; }
+    if [[ "$status" != 200 ]]; then
+        rm -f -- "$body"
+        [[ "$status" != 401 ]] || return 2
+        return 1
+    fi
+    cat -- "$body"
+    rm -f -- "$body"
 }
 
-
-# ------------------------------------------------------------
-# Function: fetch twitch livestream info (returns JSON or empty)
-# ------------------------------------------------------------
-get_twitch_stream_info() {
-    local tmp_body
-    tmp_body=$(mktemp)
-
-    # Call Twitch Helix API, capture HTTP code separately from body
-    local http_code
-    http_code=$(curl -s -o "$tmp_body" -w "%{http_code}" \
-        -H "Client-ID: ${CLIENT_ID}" \
-        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-        "https://api.twitch.tv/helix/streams?user_login=${CHANNEL}")
-
-    if [[ "$http_code" != "200" ]]; then
-        echo "[Twitch] Unexpected HTTP code from Helix: ${http_code}" >&2
-        echo "{}"   # valid JSON so jq won't explode
-        rm -f "$tmp_body"
-        return
-    fi
-
-    # Only JSON body to stdout
-    cat "$tmp_body"
-    rm -f "$tmp_body"
-}
-
-# ------------------------------------------------------------
-# Function: get a new kick token
-# ------------------------------------------------------------
-get_new_kick_token() {
-    echo "[Kick] Getting new app access token..." >&2
-    local now
-    now=$(date +%s)
-
-    local resp
-    resp=$(curl -s -X POST "https://id.kick.com/oauth/token" \
-        -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "client_id=${CLIENT_ID}" \
-        -d "client_secret=${CLIENT_SECRET}" \
-        -d "grant_type=client_credentials")
-
-    ACCESS_TOKEN=$(echo "$resp" | jq -r '.access_token')
-    local expires_in
-    expires_in=$(echo "$resp" | jq -r '.expires_in')
-
-    TOKEN_EXPIRES_AT=$(( now + expires_in - 60 ))  # Refresh 1 min early
-
-    if [[ -z "$ACCESS_TOKEN" || "$ACCESS_TOKEN" == "null" ]]; then
-        echo "[Kick] ERROR: Could not obtain token." >&2
-        exit 1
-    fi
-
-    echo "[Kick] Token acquired, good until epoch ${TOKEN_EXPIRES_AT}" >&2
-}
-
-# ------------------------------------------------------------
-# Function: ensure kick token is valid
-# ------------------------------------------------------------
-ensure_kick_token() {
-    local now
-    now=$(date +%s)
-
-    if (( now >= TOKEN_EXPIRES_AT )); then
-        get_new_kick_token
-    fi
-}
-
-# ------------------------------------------------------------
-# Function: fetch kick channel info (returns JSON or empty)
-# ------------------------------------------------------------
-get_kick_channel_info() {
-    local tmp_body
-    tmp_body=$(mktemp)
-
-    # Call Kick API, capture HTTP code separately from body
-    local http_code
-    http_code=$(curl -s -o "$tmp_body" -w "%{http_code}" \
-        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-        "https://api.kick.com/public/v1/channels?slug=${CHANNEL}")
-    echo "[Debug] Kick API Response: $(cat "$tmp_body")" >&2
-    if [[ "$http_code" != "200" ]]; then
-        echo "[Kick] Unexpected HTTP code from Kick: ${http_code}" >&2
-        echo "{}"   # valid JSON so jq won't explode
-        rm -f "$tmp_body"
-        return
-    fi
-
-    # Only JSON body to stdout
-
-    cat "$tmp_body"
-    rm -f "$tmp_body"
-}
-
-# ------------------------------------------------------------
-# Function: notify Discord
-# ------------------------------------------------------------
 notify_discord() {
-    local message="$1"
-
-    curl -s -X POST \
-        -H "Content-Type: application/json" \
-        -d "{\"content\": \"${message}\"}" \
-        "$DISCORD_WEBHOOK_URL" > /dev/null
+    local message="$1" payload
+    payload=$(jq -n --arg content "$message" '{content: $content}') || return 1
+    if ! curl -fsS --connect-timeout 10 --max-time 30 -X POST \
+        -H 'Content-Type: application/json' --data "$payload" \
+        "$DISCORD_WEBHOOK_URL" > /dev/null 2>&1; then
+        echo '[Discord] Notification failed; recording will continue.' >&2
+        return 1
+    fi
 }
 
-# ------------------------------------------------------------
-# Main loop
-# ------------------------------------------------------------
-echo "[Monitor] Starting live status loop for channel: $CHANNEL"
+build_streamlink_args() {
+    STREAMLINK_ARGS=(--retry-streams 30 --loglevel info --webbrowser true --webbrowser-headless true)
+    if [[ "$MODE" == twitch && -n "${TWITCH_USER_TOKEN:-}" ]]; then
+        STREAMLINK_ARGS+=(--twitch-force-client-integrity --twitch-api-header "Authorization=OAuth $TWITCH_USER_TOKEN")
+    fi
+    if [[ "${YOUTUBE_SPLITTING:-false}" == true ]]; then
+        STREAMLINK_ARGS+=(--hls-duration 11h59m30s)
+    fi
+}
 
-if [ "${YOUTUBE_SPLITTING:-false}" == "true" ]; then
-    HLS_DURATION="--hls-duration 11h59m30s"
-else
-    HLS_DURATION=""
-fi
+record_stream() {
+    local title="$1" author="$2" stream_id="$3" url output
+    new_recording_job "$title" "$author" "$stream_id" || return 1
+    build_streamlink_args
+    if [[ "$MODE" == twitch ]]; then url="twitch.tv/$CHANNEL"; else url="kick.com/$CHANNEL"; fi
+    if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
+        notify_discord "**$CHANNEL is LIVE!**"$'\n'"Title: $title" || true
+    fi
+    if [[ "${REMUX:-false}" == true ]]; then
+        output="$RECORDING_JOB/media.mp4"
+        if ! streamlink "${STREAMLINK_ARGS[@]}" --stdout "$url" best | \
+            ffmpeg -nostdin -n -v error -i pipe:0 -c copy -f mp4 "$output"; then
+            log_failure 'Recording interrupted; active files retained' "$RECORDING_JOB"
+            return 1
+        fi
+    else
+        output="$RECORDING_JOB/media.ts"
+        if ! streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" best; then
+            log_failure 'Recording interrupted; active files retained' "$RECORDING_JOB"
+            return 1
+        fi
+    fi
+    complete_recording "$RECORDING_JOB" || {
+        log_failure 'Completion pending; files retained' "$RECORDING_JOB"
+        return 1
+    }
+}
 
-if [ $MODE == "twitch" ]; then
+monitor_once() {
+    local json live title author stream_id status started
+    refresh_token || return 1
+    if json=$(fetch_stream_info); then
+        :
+    else
+        status=$?
+        # Invalidate in the parent shell, not fetch_stream_info's substitution.
+        [[ "$status" != 2 ]] || TOKEN_EXPIRES_AT=0
+        return 1
+    fi
+    if [[ "$MODE" == twitch ]]; then
+        live=$(jq -er '.data | length' <<< "$json") || return 1
+        [[ "$live" != 0 ]] || return 0
+        title=$(jq -er '.data[0].title' <<< "$json") &&
+            author=$(jq -er '.data[0].user_name' <<< "$json") &&
+            stream_id=$(jq -er '.data[0].id' <<< "$json") || return 1
+    else
+        live=$(jq -r '.data[0].stream.is_live // false' <<< "$json") || return 1
+        [[ "$live" == true ]] || return 0
+        title=$(jq -er '.data[0].stream_title' <<< "$json") &&
+            author=$(jq -er '.data[0].slug' <<< "$json") || return 1
+        started=$(jq -er '.data[0].stream.start_time' <<< "$json") &&
+            stream_id=$(date -d "$started" +%s) || return 1
+    fi
+    record_stream "$title" "$author" "$stream_id"
+}
+
+download_main() {
+    pipeline_init || return 1
+    # One monitor owns active recordings per channel.
+    exec 9> "$WORK_DIR/download.lock"
+    flock -n 9 || return 1
     while true; do
-        # Make sure token is valid in the PARENT shell
-        ensure_twitch_token
-
-        json=$(get_twitch_stream_info 2>/dev/null)
-        live_count=$(echo "$json" | jq '.data | length')
-
-        if (( live_count == 0 )); then
-            echo "[Monitor] Channel ${CHANNEL} not live. Checking again in ${CHECK_INTERVAL}s."
-            sleep "$CHECK_INTERVAL"
-            continue
-        fi
-
-        # Extract info
-        title=$(echo "$json" | jq -r '.data[0].title')
-        stream_id=$(echo "$json" | jq -r '.data[0].id')
-        author=$(echo "$json" | jq -r '.data[0].user_name')
-        folder_date=$(date +%Y%m)
-        episode_date=$(date +%d%H)
-        safe_title="${title//\//-}"
-        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
-        current_bytes=$(echo -n "$FILENAME" | wc -c)
-        max_bytes=250
-        if [ "$current_bytes" -gt "$max_bytes" ]; then
-            overage=$((current_bytes - max_bytes))
-            title_bytes=$(echo -n "$safe_title" | wc -c)
-            new_title_length=$((title_bytes - overage))
-            safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
-        fi
-        if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
-            FILENAME="${FILENAME}.mp4"
-            FOLDERDATE=$(date +%Y%m)
-            mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
-            outfile="$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-        else
-            FILENAME="${FILENAME}.ts"
-            mkdir -p "$DOWNLOAD_DIR"
-            outfile="$DOWNLOAD_DIR/$FILENAME"
-         fi
-
-        echo "[Monitor] $CHANNEL is LIVE on Twitch!"
-        echo "[Monitor] Title: $title"
-        echo "[Monitor] Output: $outfile"
-        if [ "${DISCORD_WEBHOOK_URL:-}" != "" ]; then
-            notify_discord "**${CHANNEL} is LIVE!**\nTitle: ${title}"
-        fi
-
-        #Initialize browser for streamlink (Any URL)
-        /usr/bin/chromium --verbose --headless --no-sandbox --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
-
-        if [ "${REMUX:-false}" == "true" ]; then
-            /usr/local/bin/streamlink \
-                --stdout \
-                --retry-streams 30 \
-                -l debug \
-                --twitch-force-client-integrity \
-                --twitch-api-header "Authorization=OAuth $TWITCH_USER_TOKEN"\
-                --webbrowser true \
-                --webbrowser-headless true \
-                $HLS_DURATION \
-                "twitch.tv/${CHANNEL}" best | ffmpeg -i pipe:0 -c copy "$outfile"
-            STREAMTITLE="$(echo $FILENAME | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - | - \{[^}]*\}| - [0-9]+|\.(ts|mp4)$//g; s/</＜/g; s/>/＞/g')"
-            if [ "${UPLOAD:-false}" == "false" ]; then #Only run when not uploading to avoid triggering upload again
-                echo "Will try and execute exiftool -title=\"$STREAMTITLE\" -api largefilesupport=1 -overwrite_original \"$outfile\""
-                exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$outfile"
-            fi
-        else
-            /usr/local/bin/streamlink \
-                --retry-streams 30 \
-                -l debug \
-                --output "$outfile" \
-                --twitch-force-client-integrity \
-                --twitch-api-header "Authorization=OAuth $TWITCH_USER_TOKEN"\
-                --webbrowser true \
-                --webbrowser-headless true \
-                $HLS_DURATION \
-                "twitch.tv/${CHANNEL}" best
-            if [ "${UPLOAD:-false}" == "false" ]; then
-                if [ "${ENCODE:-false}" == "true" ]; then
-                    mv "$outfile" "$ENCODE_DIR/$FILENAME"
-                    echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
-                else
-                    FOLDERDATE=$(date +%Y%m)
-                    mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
-                    mv "$outfile" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                    echo moved "$outfile" to "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                fi
-            fi
-        fi
-
-        echo "[Monitor] Streamlink completed. Checking status again..."
+        recover_completed_recordings
+        monitor_once || printf '[Monitor] Check or recording failed; retrying in %ss.\n' "$CHECK_INTERVAL" >&2
         sleep "$CHECK_INTERVAL"
     done
-elif [ $MODE == "kick" ]; then
-    while true; do
-        ensure_kick_token
-        json=$(get_kick_channel_info 2>/dev/null)
-        live=$(echo "$json" | jq -r '.data[0].stream.is_live // "false"')
-        if [ "$live" != "true" ]; then
-            echo "[Monitor] Channel ${CHANNEL} not live. Checking again in ${CHECK_INTERVAL}s."
-            sleep "$CHECK_INTERVAL"
-            continue
-        fi
+}
 
-        # Extract info
-        title=$(echo "$json" | jq -r '.data[0].stream_title')
-        stream_id=$(date -d "$(echo "$json" | jq -r '.data[0].stream.start_time')" +%s)
-        author=$(echo "$json" | jq -r '.data[0].slug')
-        folder_date=$(date +%Y%m)
-        episode_date=$(date +%d%H)
-        safe_title="${title//\//-}"
-        FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
-        current_bytes=$(echo -n "$FILENAME" | wc -c)
-        max_bytes=250
-        if [ "$current_bytes" -gt "$max_bytes" ]; then
-            overage=$((current_bytes - max_bytes))
-            title_bytes=$(echo -n "$safe_title" | wc -c)
-            new_title_length=$((title_bytes - overage))
-            echo "$new_title_length"
-            safe_title=$(echo -n "$safe_title" | head -c "$new_title_length" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
-            FILENAME="${author} - s${folder_date}e${episode_date} - ${safe_title} - {edition-${MODE}} - ${stream_id}"
-        fi
-        if [[ "${ENCODE:-false}" == "false" &&  "${UPLOAD:-false}" == "false" ]]; then
-            FILENAME="${FILENAME}.mp4"
-            FOLDERDATE=$(date +%Y%m)
-            mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"
-            outfile="$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-        else
-            FILENAME="${FILENAME}.ts"
-            mkdir -p "$DOWNLOAD_DIR"
-            outfile="$DOWNLOAD_DIR/$FILENAME"
-        fi
-
-        echo "[Monitor] $CHANNEL is LIVE on Kick!"
-        echo "[Monitor] Title: $title"
-        echo "[Monitor] Output: $outfile"
-        if [ "${DISCORD_WEBHOOK_URL:-}" != "" ]; then
-            notify_discord "**${CHANNEL} is LIVE!**\nTitle: ${title}"
-        fi
-
-        #Initialize browser for streamlink (Any URL)
-        /usr/bin/chromium --verbose --headless --no-sandbox --disable-gpu --dump-dom "https://ched.tv/api/7tvlist" > /dev/null
-
-        if [ "${REMUX:-false}" == "true" ]; then
-            /usr/local/bin/streamlink \
-                --stdout \
-                --retry-streams 30 \
-                -l debug \
-                --webbrowser true \
-                --webbrowser-headless true \
-                $HLS_DURATION \
-                "kick.com/${CHANNEL}" best | ffmpeg -i pipe:0 -c copy "$outfile"
-            STREAMTITLE="$(echo "$FILENAME" | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - | - \{[^}]*\}| - [0-9]+|\.(ts|mp4)$//g; s/</＜/g; s/>/＞/g')"
-            echo "Will try and execute exiftool -title=\"$STREAMTITLE\" -api largefilesupport=1 -overwrite_original \"$outfile\""
-            exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$outfile"
-        else
-            /usr/local/bin/streamlink \
-                --retry-streams 30 \
-                -l debug \
-                --output "$outfile" \
-                --webbrowser true \
-                --webbrowser-headless true \
-                $HLS_DURATION \
-                "kick.com/${CHANNEL}" best
-            if [ "${UPLOAD:-false}" == "false" ]; then
-                if [ "${ENCODE:-false}" == "true" ]; then
-                    mv "$outfile" "$ENCODE_DIR/$FILENAME"
-                    echo moved "$outfile" to "$ENCODE_DIR/$FILENAME"
-                else
-                    FOLDERDATE=$(date +%Y%m)
-                    mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
-                    mv "$outfile" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                    echo moved "$outfile" to "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$FILENAME"
-                fi
-            fi
-        fi
-
-        echo "[Monitor] Streamlink completed. Checking status again..."
-        sleep "$CHECK_INTERVAL"
-    done
-else
-    echo "Unsupported mode"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    download_main
 fi

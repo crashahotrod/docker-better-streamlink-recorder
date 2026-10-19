@@ -1,97 +1,98 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+# shellcheck source=pipeline.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/pipeline.sh"
 
-ErrorPresent=0
-
-check_required_var() {
-    local var_name="$1"
-    if [ -z "${!var_name}" ]; then
-        echo "ERROR: Required environment variable $var_name is not set." >&2
-        ErrorPresent=1
+validate_environment() {
+    local name value errors=0
+    for name in MODE CHANNEL CLIENT_ID CLIENT_SECRET USER_NAME; do
+        if [[ -z "${!name:-}" ]]; then
+            printf 'ERROR: Required environment variable %s is not set.\n' "$name" >&2
+            errors=1
+        fi
+    done
+    case "${MODE:-}" in twitch|kick) ;; *) echo 'ERROR: MODE must be twitch or kick.' >&2; errors=1 ;; esac
+    if [[ ! "${CHANNEL:-}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
+        echo 'ERROR: CHANNEL must be a channel slug without path separators.' >&2
+        errors=1
     fi
-}
-check_required_var MODE
-check_required_var CHANNEL
-check_required_var CLIENT_ID
-check_required_var CLIENT_SECRET
-check_required_var USER_NAME
-if [ $MODE == "twitch" ]; then
-    check_required_var TWITCH_USER_TOKEN
-fi
-
-mkdir -p /config /storage /etc/streamlink/scratch
-chown -R "$USER_NAME:$USER_NAME" /config /storage /etc/streamlink/scratch /var/log/streamlink
-
-check_required_dir() {
-    local dir_name="$1"
-    if gosu $USER_NAME touch "${dir_name}/.write_test" 2>/dev/null; then
-        rm -f "${dir_name}/.write_test"
-    else
-        echo "ERROR: The mounted directory ${dir_name} is NOT writeable by $USER_NAME." >&2
-        ErrorPresent=1
+    for name in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING; do
+        value="${!name:-false}"
+        case "$value" in true|false) ;; *) printf 'ERROR: %s must be true or false.\n' "$name" >&2; errors=1 ;; esac
+        export "$name=$value"
+    done
+    if [[ "$UPLOAD" == true && -z "${UPLOAD_BOT_NAME:-}" ]]; then
+        echo 'ERROR: UPLOAD_BOT_NAME is required when uploading.' >&2
+        errors=1
     fi
+    case "${YOUTUBE_PRIVACY:-public}" in
+        public|private|unlisted) ;;
+        *) echo 'ERROR: YOUTUBE_PRIVACY must be public, private, or unlisted.' >&2; errors=1 ;;
+    esac
+    (( errors == 0 ))
 }
-check_required_dir /etc/streamlink/scratch
-check_required_dir /storage
-check_required_dir /config
 
-check_required_file() {
-    local file_name="$1"
-    if gosu "$USER_NAME" test -f "$file_name" && gosu "$USER_NAME" test -r "$file_name"; then
-        return 0
-    else
-        echo "ERROR: Required file ${file_name} does not exist or is not readable by $USER_NAME." >&2
-        ErrorPresent=1
+prepare_directories() {
+    local directory probe
+    pipeline_init
+    mkdir -p -- "${CONFIG_DIR:-/config}" "$STORAGE_DIR" \
+        "${LOG_DIR:-/var/log/streamlink}" "${DBUS_RUN_DIR:-/var/run/dbus}"
+    # Queue directories must already exist before assigning ownership.
+    chown -R "$USER_NAME:$USER_NAME" "${CONFIG_DIR:-/config}" "$STORAGE_DIR" \
+        "${SCRATCH_ROOT:-/etc/streamlink/scratch}" \
+        "${LOG_DIR:-/var/log/streamlink}" "${DBUS_RUN_DIR:-/var/run/dbus}"
+    for directory in "$WORK_DIR"/{active,upload,encode,publish} "$STORAGE_DIR" "${CONFIG_DIR:-/config}"; do
+        probe=$(gosu "$USER_NAME" mktemp "$directory/.write-test.XXXXXXXX") || {
+            printf 'ERROR: Directory is not writable by %s: %s\n' "$USER_NAME" "$directory" >&2
+            return 1
+        }
+        rm -- "$probe"
+    done
+}
+
+validate_upload_credentials() {
+    [[ "$UPLOAD" == true ]] || return 0
+    local filename
+    # Pass absolute credential paths to the uploader; no mutable /etc symlinks.
+    for filename in youtubeuploader_client_secrets.json youtubeuploader_request.token; do
+        if ! gosu "$USER_NAME" test -f "${CONFIG_DIR:-/config}/$filename" || \
+            ! gosu "$USER_NAME" test -r "${CONFIG_DIR:-/config}/$filename"; then
+            printf 'ERROR: Upload credential is missing or unreadable: %s\n' "$filename" >&2
+            return 1
+        fi
+    done
+}
+
+initialize_dbus() {
+    local environment_file session_path
+    environment_file=$(mktemp /tmp/streamlink-dbus.XXXXXXXX)
+    if ! gosu "$USER_NAME" dbus-launch --sh-syntax > "$environment_file"; then
+        rm -- "$environment_file"
         return 1
     fi
+    # dbus-launch emits trusted shell assignments for the session just started.
+    # shellcheck disable=SC1090
+    source "$environment_file"
+    rm -- "$environment_file"
+    export DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
+    session_path="${DBUS_SESSION_BUS_ADDRESS#unix:path=}"
+    session_path="${session_path%%,*}"
+    if [[ -S "$session_path" && ! -S /run/dbus/system_bus_socket ]]; then
+        ln -sfn -- "$session_path" /run/dbus/system_bus_socket
+        export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
+    fi
 }
 
-if [ "{$UPLOAD:-false}" == "true" ]; then
-    check_required_var UPLOAD_BOT_NAME
-    sed -i '/^\[program:streamlink_upload\]/,/^\[/ {/autostart=false/ s/autostart=false/autostart=true/}' /etc/supervisor/conf.d/supervisord.conf
-    if check_required_file "/config/youtubeuploader_client_secrets.json" && check_required_file "/config/youtubeuploader_request.token"; then
-        ln -s /config/youtubeuploader_client_secrets.json /etc/client_secrets.json
-        ln -s /config/youtubeuploader_request.token /etc/request.token
-    fi
-fi
+entrypoint_main() {
+    validate_environment
+    prepare_directories
+    validate_upload_credentials
+    chmod 666 /dev/stdout /dev/stderr
+    initialize_dbus
+    printf 'Starting application as %s (UID: %s)...\n' "$USER_NAME" "$(id -u "$USER_NAME")"
+    exec gosu "$USER_NAME" "$@"
+}
 
-if [ "{$ENCODE:-false}" == "true" ]; then
-    sed -i '/^\[program:streamlink_encode\]/,/^\[/ {/autostart=false/ s/autostart=false/autostart=true/}' /etc/supervisor/conf.d/supervisord.conf
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    entrypoint_main "$@"
 fi
-
-if [ "$ErrorPresent" -eq 1 ]; then
-    sleep 30
-    exit 1
-fi
-chown -R "$USER_NAME:$USER_NAME" /etc/supervisor/conf.d/
-chmod 444 /etc/supervisor/conf.d/supervisord.conf
-chmod 666 /dev/stdout /dev/stderr
-chown "$USER_NAME:$USER_NAME" /var/run/dbus
-mkdir -p /etc/streamlink/scratch/$MODE/$CHANNEL/{encode,download}
-if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] || [ ! -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ]; then
-    echo "Initializing D-Bus session not found..."
-    [ -n "$DBUS_SESSION_BUS_ADDRESS" ] && echo "Session bus variable present: true ($DBUS_SESSION_BUS_ADDRESS)" || echo "Session bus variable present: false"
-    [ -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ] && echo "Session bus socket present: true ($DBUS_SESSION_BUS_ADDRESS)" || echo "Session bus socket present: false"
-    rm -f /tmp/dbus_env
-    mkdir -p /var/run/dbus
-    chown $USER_NAME:$USER_NAME /var/run/dbus
-    gosu $USER_NAME dbus-launch --sh-syntax > /tmp/dbus_env
-    if [ -f /tmp/dbus_env ]; then
-        . /tmp/dbus_env
-        export DBUS_SESSION_BUS_ADDRESS
-        export DBUS_SESSION_BUS_PID
-        mkdir -p /run/dbus
-        if [ -z "$DBUS_SYSTEM_BUS_ADDRESS" ] || [ ! -S "/run/dbus/system_bus_socket" ]; then
-            echo "System bus not found. Redirecting to Session Bus..."
-            [ -n "$DBUS_SYSTEM_BUS_ADDRESS" ] && echo "System bus variable present: true ($DBUS_SYSTEM_BUS_ADDRESS)" || echo "System bus variable present: false"
-            [ -S "/run/dbus/system_bus_socket" ] && echo "System bus socket present: true ($DBUS_SYSTEM_BUS_ADDRESS)" || echo "System bus socket present: false"
-            ln -sf "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" /run/dbus/system_bus_socket
-            export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
-        else
-            echo "System bus already exists. Skipping redirection."
-        fi
-        echo "DBus started for $USER_NAME user at: $DBUS_SESSION_BUS_ADDRESS"
-    fi
-fi
-echo "Starting application as $USER_NAME (UID: $(id -u $USER_NAME))..."
-exec gosu $USER_NAME "$@"

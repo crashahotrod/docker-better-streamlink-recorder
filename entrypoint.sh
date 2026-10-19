@@ -16,11 +16,14 @@ validate_environment() {
         echo 'ERROR: CHANNEL must be a channel slug without path separators.' >&2
         errors=1
     fi
-    for name in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING; do
+    for name in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED; do
         value="${!name:-false}"
         case "$value" in true|false) ;; *) printf 'ERROR: %s must be true or false.\n' "$name" >&2; errors=1 ;; esac
         export "$name=$value"
     done
+    value="${DISCORD_NOTIFY_ON_ERROR:-true}"
+    case "$value" in true|false) ;; *) printf 'ERROR: DISCORD_NOTIFY_ON_ERROR must be true or false.\n' >&2; errors=1 ;; esac
+    export DISCORD_NOTIFY_ON_ERROR="$value"
     if [[ "$UPLOAD" == true && -z "${UPLOAD_BOT_NAME:-}" ]]; then
         echo 'ERROR: UPLOAD_BOT_NAME is required when uploading.' >&2
         errors=1
@@ -29,6 +32,24 @@ validate_environment() {
         public|private|unlisted) ;;
         *) echo 'ERROR: YOUTUBE_PRIVACY must be public, private, or unlisted.' >&2; errors=1 ;;
     esac
+    if [[ -n "${ENCODE_CRF:-}" ]]; then
+        if [[ ! "$ENCODE_CRF" =~ ^[0-9]+$ ]] || (( ENCODE_CRF < 0 || ENCODE_CRF > 51 )); then
+            echo 'ERROR: ENCODE_CRF must be an integer between 0 and 51.' >&2
+            errors=1
+        fi
+    fi
+    if [[ -n "${MIN_FREE_SPACE_GB:-}" ]]; then
+        if [[ ! "$MIN_FREE_SPACE_GB" =~ ^[0-9]+$ ]]; then
+            echo 'ERROR: MIN_FREE_SPACE_GB must be a non-negative integer.' >&2
+            errors=1
+        fi
+    fi
+    if [[ -n "${RETENTION_DAYS:-}" ]]; then
+        if [[ ! "$RETENTION_DAYS" =~ ^[0-9]+$ ]]; then
+            echo 'ERROR: RETENTION_DAYS must be a non-negative integer.' >&2
+            errors=1
+        fi
+    fi
     (( errors == 0 ))
 }
 
@@ -61,6 +82,10 @@ validate_upload_credentials() {
             return 1
         fi
     done
+    if ! gosu "$USER_NAME" test -w "${CONFIG_DIR:-/config}/youtubeuploader_request.token"; then
+        printf 'ERROR: Upload token is not writable by %s: youtubeuploader_request.token\n' "$USER_NAME" >&2
+        return 1
+    fi
 }
 
 initialize_dbus() {

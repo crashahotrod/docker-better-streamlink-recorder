@@ -32,7 +32,7 @@ for variable in MODE CHANNEL CLIENT_ID CLIENT_SECRET USER_NAME; do
         echo "Missing $variable accepted" >&2; exit 1
     fi
 done
-for variable in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING; do
+for variable in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED; do
     if (export "$variable=invalid"; validate_environment 2>/dev/null); then
         echo "Invalid $variable accepted" >&2; exit 1
     fi
@@ -40,6 +40,18 @@ done
 for YOUTUBE_PRIVACY in public private unlisted; do validate_environment; done
 if (YOUTUBE_PRIVACY=invalid; validate_environment 2>/dev/null); then exit 1; fi
 YOUTUBE_PRIVACY=public
+for val in 0 18 23 51; do (ENCODE_CRF="$val"; validate_environment); done
+for val in -1 52 abc; do
+    if (ENCODE_CRF="$val"; validate_environment 2>/dev/null); then echo "Invalid ENCODE_CRF $val accepted" >&2; exit 1; fi
+done
+for val in 0 5 100; do (MIN_FREE_SPACE_GB="$val"; validate_environment); done
+for val in -1 abc; do
+    if (MIN_FREE_SPACE_GB="$val"; validate_environment 2>/dev/null); then echo "Invalid MIN_FREE_SPACE_GB $val accepted" >&2; exit 1; fi
+done
+for val in 0 7 30; do (RETENTION_DAYS="$val"; validate_environment); done
+for val in -1 abc; do
+    if (RETENTION_DAYS="$val"; validate_environment 2>/dev/null); then echo "Invalid RETENTION_DAYS $val accepted" >&2; exit 1; fi
+done
 gosu() { shift; "$@"; }
 UPLOAD=true
 if validate_upload_credentials; then echo 'Missing credentials accepted' >&2; exit 1; fi
@@ -51,4 +63,10 @@ for filename in youtubeuploader_client_secrets.json youtubeuploader_request.toke
     if validate_upload_credentials 2>/dev/null; then echo "Missing $filename accepted" >&2; exit 1; fi
     mv -- "$CONFIG_DIR/$filename.saved" "$CONFIG_DIR/$filename"
 done
+gosu() {
+    if [[ "${3:-}" == -w ]]; then return 1; fi
+    shift; "$@"
+}
+if validate_upload_credentials 2>/dev/null; then echo "Unwritable token accepted" >&2; exit 1; fi
+gosu() { shift; "$@"; }
 printf 'PASS: required settings, all boolean flags, privacy choices and credential gating\n'

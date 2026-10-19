@@ -139,4 +139,13 @@ for MODE in twitch kick; do
         done
     done
 done
-printf 'PASS: token requests/cache, HTTP errors, offline/live decisions, splitting and authentication\n'
+STREAMLINK_EXTRA_ARGS='--hls-live-restart --stream-segment-threads 2'
+build_streamlink_args
+has_restart=0 threads=0
+for arg in "${STREAMLINK_ARGS[@]}"; do
+    if [[ "$arg" == '--hls-live-restart' ]]; then has_restart=$((has_restart + 1)); fi
+    if [[ "$arg" == '--stream-segment-threads' ]]; then threads=$((threads + 1)); fi
+done
+[[ "$has_restart" -eq 1 && "$threads" -eq 1 ]]
+unset STREAMLINK_EXTRA_ARGS
+printf 'PASS: token requests/cache, HTTP errors, offline/live decisions, splitting, authentication, and extra args\n'

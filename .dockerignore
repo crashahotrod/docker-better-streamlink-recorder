@@ -10,6 +10,7 @@
 !media.py
 !encode.sh
 !upload.sh
+!status.sh
 !entrypoint.sh
 !supervisord.conf
 !build/

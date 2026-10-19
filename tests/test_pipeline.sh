@@ -145,6 +145,12 @@ streamlink() {
 }
 if record_stream interrupted test 4; then echo 'Interrupted capture accepted' >&2; exit 1; fi
 [[ -s "$RECORDING_JOB/capture.bin" && ! -f "$RECORDING_JOB/completed" ]]
+AUTO_RECOVER_INTERRUPTED=true recover_completed_recordings
+[[ -f "$WORK_DIR/normalize/${RECORDING_JOB##*/}/completed" ]]
+AUTO_RECOVER_INTERRUPTED=true
+if record_stream interrupted-auto test 44; then echo 'Interrupted capture accepted' >&2; exit 1; fi
+[[ -f "$WORK_DIR/normalize/${RECORDING_JOB##*/}/completed" ]]
+unset AUTO_RECOVER_INTERRUPTED
 # Offline recovery writes candidates beside the input and refuses an old manifest.
 REMUX=true UPLOAD=false ENCODE=false new_recording_job recovery test 5
 cp -- "$TEST_ROOT/fixtures/control-single-init.mp4" "$RECORDING_JOB/capture.bin"

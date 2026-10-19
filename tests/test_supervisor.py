@@ -26,13 +26,15 @@ class SupervisorTests(unittest.TestCase):
                         options.realize(args=['-c', str(ROOT / 'supervisord.conf')])
                         programs = {p.name: p for g in options.process_group_configs for p in g.process_configs}
                         expected = {'download': True, 'normalize': True, 'publish': True,
-                                    'upload': upload == 'true', 'encode': encode == 'true'}
+                                    'upload': upload == 'true', 'encode': encode == 'true',
+                                    'status': True}
                         self.assertEqual({f'streamlink_{name}' for name in expected}, set(programs))
                         for name, enabled in expected.items():
                             process = programs[f'streamlink_{name}']
                             self.assertEqual(enabled, process.autostart)
                             self.assertTrue(process.stopasgroup)
                             self.assertTrue(process.killasgroup)
+                            self.assertGreaterEqual(process.stopwaitsecs, 30)
 
 
 if __name__ == '__main__':

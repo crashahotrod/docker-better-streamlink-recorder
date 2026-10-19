@@ -46,17 +46,6 @@ fetch_stream_info() {
     rm -f -- "$body"
 }
 
-notify_discord() {
-    local message="$1" payload
-    payload=$(jq -n --arg content "$message" '{content: $content}') || return 1
-    if ! curl -fsS --connect-timeout 10 --max-time 30 -X POST \
-        -H 'Content-Type: application/json' --data "$payload" \
-        "$DISCORD_WEBHOOK_URL" > /dev/null 2>&1; then
-        echo '[Discord] Notification failed; recording will continue.' >&2
-        return 1
-    fi
-}
-
 build_streamlink_args() {
     STREAMLINK_ARGS=(--retry-streams 30 --loglevel info --webbrowser true --webbrowser-headless true)
     if [[ "$MODE" == twitch && -n "${TWITCH_USER_TOKEN:-}" ]]; then
@@ -65,54 +54,91 @@ build_streamlink_args() {
     if [[ "${YOUTUBE_SPLITTING:-false}" == true ]]; then
         STREAMLINK_ARGS+=(--hls-duration 11h59m30s)
     fi
+    if [[ -n "${STREAMLINK_EXTRA_ARGS:-}" ]]; then
+        local -a extra_streamlink_args=()
+        read -r -a extra_streamlink_args <<< "$STREAMLINK_EXTRA_ARGS"
+        STREAMLINK_ARGS+=("${extra_streamlink_args[@]}")
+    fi
+}
+
+set_channel_status() {
+    [[ -n "${WORK_DIR:-}" ]] || return 0
+    write_state "$WORK_DIR/channel.status" "$1"
 }
 
 record_stream() {
-    local title="$1" author="$2" stream_id="$3" url output
+    local title="$1" author="$2" stream_id="$3" url stream_url output quality
+    check_free_space "$WORK_DIR/active" || {
+        log_failure 'Insufficient disk space in work directory to start recording' "$WORK_DIR/active"
+        return 1
+    }
+    check_free_space "$STORAGE_DIR" || {
+        log_failure 'Insufficient disk space in storage directory to start recording' "$STORAGE_DIR"
+        return 1
+    }
     new_recording_job "$title" "$author" "$stream_id" || return 1
     build_streamlink_args
     if [[ "$MODE" == twitch ]]; then url="twitch.tv/$CHANNEL"; else url="kick.com/$CHANNEL"; fi
+    stream_url="https://$url"
     if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
-        notify_discord "**$CHANNEL is LIVE!**"$'\n'"Title: $title" || true
+        notify_discord "**$CHANNEL is LIVE!**"$'\n'"Title: $title" "$title" "$stream_url" "$author" || true
     fi
     # Keep the original independent of normalization failures and decoder exits.
     output="$RECORDING_JOB/capture.bin"
-    if ! streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" best; then
+    quality="${STREAM_QUALITY:-best}"
+    if ! streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" "$quality"; then
         log_failure 'Recording interrupted; active capture retained' "$RECORDING_JOB"
+        if [[ "${AUTO_RECOVER_INTERRUPTED:-false}" == true && -s "$output" ]]; then
+            printf '[Pipeline] Auto-recovering interrupted capture: %q\n' "$RECORDING_JOB" >&2
+            notify_recording_completed "$RECORDING_JOB" || true
+            complete_recording "$RECORDING_JOB" || log_failure 'Interrupted capture recovery pending' "$RECORDING_JOB"
+        fi
+        [[ -z "${WORK_DIR:-}" ]] || rm -f -- "$WORK_DIR/active.job"
         return 1
     fi
+    notify_recording_completed "$RECORDING_JOB" || true
     complete_recording "$RECORDING_JOB" || {
         log_failure 'Completion pending; files retained' "$RECORDING_JOB"
+        [[ -z "${WORK_DIR:-}" ]] || rm -f -- "$WORK_DIR/active.job"
         return 1
     }
 }
 
 monitor_once() {
     local json live title author stream_id status started
-    refresh_token || return 1
+    refresh_token || { set_channel_status "offline"; return 1; }
     if json=$(fetch_stream_info); then
         :
     else
         status=$?
         # Invalidate in the parent shell, not fetch_stream_info's substitution.
         [[ "$status" != 2 ]] || TOKEN_EXPIRES_AT=0
+        set_channel_status "offline"
         return 1
     fi
     if [[ "$MODE" == twitch ]]; then
         live=$(jq -er '.data | length' <<< "$json") || return 1
-        [[ "$live" != 0 ]] || return 0
+        if [[ "$live" == 0 ]]; then
+            set_channel_status "offline"
+            return 0
+        fi
         title=$(jq -er '.data[0].title' <<< "$json") &&
             author=$(jq -er '.data[0].user_name' <<< "$json") &&
             stream_id=$(jq -er '.data[0].id' <<< "$json") || return 1
     else
         live=$(jq -r '.data[0].stream.is_live // false' <<< "$json") || return 1
-        [[ "$live" == true ]] || return 0
+        if [[ "$live" != true ]]; then
+            set_channel_status "offline"
+            return 0
+        fi
         title=$(jq -er '.data[0].stream_title' <<< "$json") &&
             author=$(jq -er '.data[0].slug' <<< "$json") || return 1
         started=$(jq -er '.data[0].stream.start_time' <<< "$json") &&
             stream_id=$(date -d "$started" +%s) || return 1
     fi
+    set_channel_status "recording"
     record_stream "$title" "$author" "$stream_id"
+    set_channel_status "monitoring"
 }
 
 download_main() {
@@ -120,6 +146,7 @@ download_main() {
     # One monitor owns active recordings per channel.
     exec 9> "$WORK_DIR/download.lock"
     flock -n 9 || return 1
+    set_channel_status "monitoring"
     while true; do
         recover_completed_recordings
         monitor_once || printf '[Monitor] Check or recording failed; retrying in %ss.\n' "$CHECK_INTERVAL" >&2

@@ -7,14 +7,35 @@ services:
       - CHANNEL=channelToMonitorHere
       - CLIENT_ID=yourClientID
       - CLIENT_SECRET=yourClientSecret
-      #optional
+      # Optional recording settings
       - REMUX=false
       - ENCODE=false
       - UPLOAD=false
+      # - STREAM_QUALITY=best # e.g. 1080p60,720p60,best
+      # - STREAMLINK_EXTRA_ARGS= # e.g. --twitch-disable-ads
+      # - AUTO_RECOVER_INTERRUPTED=false # Auto-recover and process interrupted captures (default false)
+      # Optional encoding customization (when ENCODE=true)
+      # - ENCODE_CRF=23 # 0-51 (lower is higher quality, default 23)
+      # - ENCODE_PRESET=medium # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+      # - ENCODE_VIDEO_CODEC=libx264
+      # - ENCODE_AUDIO_BITRATE=128k
+      # - ENCODE_EXTRA_ARGS=
+      # Optional YouTube settings (when UPLOAD=true)
       # - UPLOAD_BOT_NAME=name # Required when UPLOAD=true
-      - YOUTUBE_SPLITTING=false
-      # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-      # - TWITCH_USER_TOKEN=yourUserToken #Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
+      # - YOUTUBE_PRIVACY=public # public, private, or unlisted
+      # - YOUTUBE_SPLITTING=false
+      # - YOUTUBE_PLAYLIST_ID= # Playlist ID to append uploaded videos to
+      # - YOUTUBE_TAGS= # Comma-separated tags, e.g. gaming,stream,vod
+      # - YOUTUBE_CATEGORY_ID= # e.g. 20 for Gaming
+      # - YOUTUBE_DESCRIPTION= # Custom description template
+      # Optional notifications & monitoring
+      # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... # Stream go-live & upload notifications
+      # - DISCORD_MONITOR_WEBHOOK_URL=https://discord.com/api/webhooks/... # Separate monitor webhook for persistent status & operational alerts
+      # - DISCORD_NOTIFY_ON_ERROR=true # Broadcast operational alerts (recording complete, low disk, quarantine, quota; default true)
+      # - TWITCH_USER_TOKEN=yourUserToken # Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
+      # - MIN_FREE_SPACE_GB=5 # Guardrail: Minimum free GB required on disk before recording (0=disabled)
+      # - RETENTION_DAYS=0 # Auto-prune recordings older than N days from storage (0=disabled)
+      # - POST_PUBLISH_COMMAND= # Script/command to run after publication ($PUBLISHED_FILE, $PUBLISHED_CHANNEL, $PUBLISHED_MODE)
     restart: always
     volumes:
       - "streamlink_scratch:/etc/streamlink/scratch"

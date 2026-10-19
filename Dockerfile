@@ -25,7 +25,7 @@ RUN mkdir -p /out/licenses && cp /usr/local/go/LICENSE /out/licenses/Go-LICENSE 
 
 FROM python:3.12-bookworm AS streamlink
 ENV streamlinkCommit=b19cc05aff877e95b4aee2000401566a3ea4d5b5
-RUN pip3 install --prefix=/install git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
+RUN pip3 install --no-cache-dir --root-user-action=ignore --prefix=/install git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
 RUN sed -i '/arguments.extend(\[/a \                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",' /install/lib/python3.12/site-packages/streamlink/webbrowser/chromium.py
 
 FROM python:3.12-slim-bookworm AS runtime
@@ -35,7 +35,7 @@ ARG USER_NAME=apps
 ARG USER_ID=568
 ARG GROUP_ID=568
 ENV USER_NAME=${USER_NAME}
-RUN groupadd -g ${GROUP_ID} ${USER_NAME} && useradd -u ${USER_ID} -g ${USER_NAME} -m -s /bin/bash ${USER_NAME}
+RUN groupadd -r -g ${GROUP_ID} ${USER_NAME} && useradd -r -u ${USER_ID} -g ${USER_NAME} -m -s /bin/bash ${USER_NAME}
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates supervisor jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini util-linux && rm -rf /var/lib/apt/lists/*
 COPY --from=uploader /out/youtubeuploader /etc/youtubeuploader
 COPY --from=uploader /out/licenses /usr/share/doc/youtubeuploader
@@ -50,14 +50,19 @@ RUN mkdir -p /etc/streamlink/scratch
 RUN mkdir -p /var/run/dbus
 
 COPY ./download.sh /etc/streamlink/tools/
-COPY ./pipeline.sh ./publish.sh ./normalize.sh ./recover.sh ./media.py /etc/streamlink/tools/
+COPY ./pipeline.sh ./publish.sh ./normalize.sh ./recover.sh ./status.sh ./media.py /etc/streamlink/tools/
 COPY ./encode.sh /etc/streamlink/tools/
 COPY ./upload.sh /etc/streamlink/tools/
 COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY pipeline.sh media.py /usr/local/bin/
 COPY LICENSE /usr/share/doc/streamlink-recorder/LICENSE
-RUN chmod +x /etc/streamlink/tools/*.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /etc/streamlink/tools/*.sh /usr/local/bin/entrypoint.sh && \
+    ln -sf /etc/supervisor/conf.d/supervisord.conf /etc/supervisor/supervisord.conf && \
+    ln -sf /etc/supervisor/conf.d/supervisord.conf /etc/supervisord.conf
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD supervisorctl status | grep -E 'RUNNING|STARTING' || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--","entrypoint.sh"]
 CMD ["supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

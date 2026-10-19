@@ -27,20 +27,45 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `CHANNEL` | Required | Channel slug, without URL or path separators. |
 | `CLIENT_ID` | Required | Application client ID for the selected service's live-status API. |
 | `CLIENT_SECRET` | Required | Corresponding application client secret. |
+| `STREAM_QUALITY` | `best` | Stream quality string passed to Streamlink (e.g. `1080p60,720p60,best`). |
+| `STREAMLINK_EXTRA_ARGS` | Unset | Extra arguments passed to Streamlink (e.g. `--twitch-disable-ads`). |
+| `AUTO_RECOVER_INTERRUPTED` | `false` | Automatically recover and process interrupted captures when a stream drops. |
 | `REMUX` | `false` | After capture, stream-copy TS to MP4. MP4 input is normalized as MP4 regardless of this flag. |
-| `ENCODE` | `false` | Convert completed recordings to H.264/AAC MP4 using CRF 23 and the medium preset. |
+| `ENCODE` | `false` | Convert completed recordings to H.264/AAC MP4. |
+| `ENCODE_CRF` | `23` | FFmpeg Constant Rate Factor for encoding (0–51). |
+| `ENCODE_PRESET` | `medium` | FFmpeg encoding preset (`ultrafast` through `veryslow`). |
+| `ENCODE_VIDEO_CODEC` | `libx264` | FFmpeg video encoder codec. |
+| `ENCODE_AUDIO_BITRATE` | `128k` | Audio bitrate for AAC encoding. |
+| `ENCODE_EXTRA_ARGS` | Unset | Extra arguments passed to FFmpeg during encoding. |
 | `UPLOAD` | `false` | Upload completed recordings to YouTube before optional encoding. |
 | `UPLOAD_BOT_NAME` | Required for uploads | Name included in the upload description. |
 | `YOUTUBE_PRIVACY` | `public` | Upload visibility: `public`, `private`, or `unlisted`. Use `private` for smoke tests. |
 | `YOUTUBE_SPLITTING` | `false` | Limit each recording segment to 11h59m30s for YouTube. |
-| `DISCORD_WEBHOOK_URL` | Unset | Optional go-live notification webhook. Notification failures do not stop recording. |
+| `YOUTUBE_PLAYLIST_ID` | Unset | Optional YouTube playlist ID to append uploaded videos to. |
+| `YOUTUBE_TAGS` | Unset | Optional comma-separated tags for uploaded videos. |
+| `YOUTUBE_CATEGORY_ID` | Unset | Optional YouTube numeric category ID (e.g. `20` for Gaming). |
+| `YOUTUBE_DESCRIPTION` | Unset | Custom description template (defaults to `Uploaded Automatically by <UPLOAD_BOT_NAME>`). |
+| `MIN_FREE_SPACE_GB` | `0` | Minimum free disk space in GB required on scratch/storage to start recording (`0` disables check). |
+| `RETENTION_DAYS` | `0` | Auto-prune recordings older than N days from storage (`0` disables pruning). |
+| `POST_PUBLISH_COMMAND` | Unset | Custom shell command evaluated when a recording part is published. |
+| `DISCORD_WEBHOOK_URL` | Unset | Optional Discord webhook for rich embed go-live and upload-complete alerts. Notification failures do not stop recording. |
 | `TWITCH_USER_TOKEN` | Unset | Optional user OAuth token for authenticated Twitch access, such as subscribed-channel ad handling. |
 
-Boolean values must be exactly `true` or `false`. Twitch recording does not
+Boolean values must be exactly `true` or `false`. Numeric values (`ENCODE_CRF`, `MIN_FREE_SPACE_GB`, `RETENTION_DAYS`)
+must be positive integers (or `0` to disable). Twitch recording does not
 require `TWITCH_USER_TOKEN`; anonymous operation omits its authorization header.
 See [Streamlink's Twitch authentication instructions](https://streamlink.github.io/cli/plugins/twitch.html#authentication)
 for obtaining a user token. Application client credentials are still required
 for live-status checks.
+
+When `POST_PUBLISH_COMMAND` is specified, the command is executed in a subshell with
+`$PUBLISHED_FILE` (absolute path of published file), `$PUBLISHED_CHANNEL`, and `$PUBLISHED_MODE`
+exported in its environment.
+
+When `DISCORD_WEBHOOK_URL` is set, rich embeds are sent on stream start and upon YouTube upload
+completion (including direct links to uploaded videos). If YouTube's daily API upload quota is
+exceeded, upload workers detect `quotaExceeded` and automatically back off until the quota
+resets at 08:00 UTC.
 
 ## Processing behavior
 
@@ -178,6 +203,73 @@ the original playlist/init data or manual recovery. Keep the originals. For an
 already normalized job, inspect its manifest, receipts, and diagnostics rather
 than removing them to force a retry. An interrupted normalization can leave
 `.normalizing.*` directories; inspect these only with the container stopped.
+
+## Status monitoring and Discord alerts
+
+### JSON status exporter (`status.json`)
+
+The container continuously writes an atomic status manifest to
+`/etc/streamlink/scratch/status.json` (and `<work_dir>/status.json`) for external dashboards
+(such as Home Assistant, Uptime Kuma, or monitoring scripts):
+
+```json
+{
+  "channel": "streamer_name",
+  "mode": "twitch",
+  "status": "recording",
+  "updated_at": "2026-10-19T06:15:30Z",
+  "active_capture": {
+    "job_id": "recording.XXXXXXXX",
+    "title": "Stream title",
+    "author": "streamer_name",
+    "started_at": 1729318530,
+    "duration_seconds": 3600,
+    "duration_human": "01:00:00",
+    "size_bytes": 1073741824,
+    "size_human": "1.00 GB"
+  },
+  "queues": {
+    "active": 1,
+    "normalize": 0,
+    "upload": 0,
+    "encode": 0,
+    "publish": 0,
+    "quarantine": 0
+  },
+  "disk_space": {
+    "scratch_free_gb": 120,
+    "storage_free_gb": 450,
+    "min_free_space_gb": 5
+  }
+}
+```
+
+- `status`: `offline` (stream not live or monitor stopped), `monitoring` (checking API for stream), or `recording` (active stream capture).
+- `active_capture`: Details of the in-progress stream recording, or `null` when not recording.
+- `queues`: Real-time job counts across all pipeline stages.
+- `disk_space`: Available gigabytes on the scratch and storage filesystems.
+
+### Discord monitor webhook and alerts
+
+Configure notifications using webhook URLs in your environment:
+
+- `DISCORD_WEBHOOK_URL`: Primary webhook for public stream go-live and YouTube upload success notifications.
+- `DISCORD_MONITOR_WEBHOOK_URL`: Dedicated monitor webhook for administrative status and operational alerts. If unset, operational alerts fall back to `DISCORD_WEBHOOK_URL`.
+- `DISCORD_NOTIFY_ON_ERROR`: Broadcast failure and operational events (default `true`).
+
+#### Persistent status message
+
+When `DISCORD_MONITOR_WEBHOOK_URL` is configured, the recorder creates a persistent status embed displaying the current channel status, active recording statistics, queue counts, and storage space.
+The message ID is persisted in `$WORK_DIR/status_message.id` and updated as data changes or on a 30-second interval. If the message is deleted in Discord (HTTP 404), the recorder automatically creates a new message and updates the persisted ID.
+
+#### Operational event alerts
+
+Critical events are posted as distinct, separate messages:
+
+- **Recording completed**: Stream title, duration, and captured size when a recording finishes.
+- **Low disk space**: Warning when available disk space drops below `MIN_FREE_SPACE_GB` (debounced to once every 5 minutes).
+- **Job quarantined**: Alert when a capture fails normalization or integrity verification and requires manual review.
+- **YouTube quota exceeded**: Notification when daily YouTube upload API limits are hit, indicating paused uploads until 08:00 UTC.
 
 ## Development checks
 

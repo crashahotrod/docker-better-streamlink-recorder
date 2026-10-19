@@ -26,6 +26,14 @@ ln() {
     if [[ "${FAIL_STAGE:-}" == second-part && "${!#}" == *part-0002.mp4 ]]; then return 1; fi
     command ln "$@"
 }
+cp() {
+    if [[ "${FAIL_STAGE:-}" == copy ]]; then
+        printf 'partial copy' > "${!#}"
+        echo 'No space left on device' >&2
+        return 1
+    fi
+    command cp "$@"
+}
 new_job() {
     local fixture="${1:-control-single-init.mp4}" stage="${2:-encode}"
     REMUX=true UPLOAD=false ENCODE=true new_recording_job $'title " \\ cafe\nnew line' test 123
@@ -150,4 +158,60 @@ JOB="$WORK_DIR/normalize/${JOB##*/}"
 [[ -f "$JOB/normalized.json" && $(file_hash "$JOB/capture.bin") == "$original" ]]
 if bash "$ROOT/recover.sh" "$JOB"; then echo 'Existing manifest overwritten' >&2; exit 1; fi
 [[ $(file_hash "$JOB/capture.bin") == "$original" ]]
+
+# Validation applies to old pending jobs at every consumer boundary.
+calls=$(wc -l < "$TEST_ROOT/uploads")
+for stage in normalize upload encode publish; do
+    UPLOAD=true ENCODE=true REMUX=true new_recording_job corrupt test 6
+    cp -- "$TEST_ROOT/fixtures/mismatched-first-init.mp4" "$RECORDING_JOB/capture.bin"
+    original=$(file_hash "$RECORDING_JOB/capture.bin")
+    complete_recording "$RECORDING_JOB"
+    JOB="$WORK_DIR/normalize/${RECORDING_JOB##*/}"
+    if [[ "$stage" != normalize ]]; then advance_job "$JOB" "$stage"; JOB="$WORK_DIR/$stage/${JOB##*/}"; fi
+    case "$stage" in
+        normalize) consumer=normalize_job ;;
+        upload) consumer=upload_job ;;
+        encode) consumer=encode_job ;;
+        publish) consumer=publish_recording ;;
+    esac
+    if "$consumer" "$JOB"; then echo "Corrupt input promoted from $stage" >&2; exit 1; fi
+    JOB="$WORK_DIR/quarantine/${JOB##*/}"
+    [[ -s "$JOB/validation.json" && $(file_hash "$JOB/capture.bin") == "$original" ]]
+    [[ ! -f "$JOB/normalized.json" && ! -f "$JOB/parts/0001.uploaded" ]]
+done
+[[ $(wc -l < "$TEST_ROOT/uploads") -eq "$calls" ]]
+
+# A partial destination copy must be retried from the unchanged source.
+new_job control-single-init.mp4 publish
+original=$(file_hash "$JOB/capture.bin")
+FAIL_STAGE=copy
+if publish_recording "$JOB"; then echo 'Partial copy published' >&2; exit 1; fi
+[[ $(file_hash "$JOB/capture.bin") == "$original" && ! -f "$JOB/parts/0001.published.sha256" ]]
+unset FAIL_STAGE
+publish_recording "$JOB"
+[[ ! -d "$JOB" ]]
+
+# Changed final bytes invalidate the saved receipt and prevent source cleanup.
+new_job duplicate-changed-codec.mp4 publish
+publish_part "$JOB" 0001 "$(part_file "$JOB" 0001)"
+final=$(part_destination "$JOB" 0001 mp4)
+cp -- "$final" "$TEST_ROOT/committed.mp4"
+printf 'changed' >> "$final"
+if publish_recording "$JOB"; then echo 'Changed final accepted' >&2; exit 1; fi
+[[ -s "$JOB/capture.bin" && ! -f "$JOB/parts/0002.published.sha256" ]]
+cp -- "$TEST_ROOT/committed.mp4" "$final"
+publish_recording "$JOB"
+[[ ! -d "$JOB" ]]
+
+# Cleanup interrupted after atomic retirement resumes without reprocessing media.
+new_job control-single-init.mp4 publish
+cleanup_definition=$(declare -f cleanup_retired_job)
+cleanup_retired_job() { return 1; }
+if publish_recording "$JOB"; then echo 'Interrupted cleanup reported success' >&2; exit 1; fi
+retired="${JOB%/*}/.completed.${JOB##*/}"
+[[ ! -d "$JOB" && -s "$retired/capture.bin" ]]
+rm -- "$retired/normalized.json"
+eval "$cleanup_definition"
+run_queue_once publish publish_recording
+[[ ! -d "$retired" ]]
 printf 'PASS: retained inputs, per-part receipts, retries, locks and crash recovery\n'

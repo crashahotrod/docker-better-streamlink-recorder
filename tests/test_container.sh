@@ -15,7 +15,7 @@ cleanup() {
     local status=$?
     if [[ -n "$container_id" ]]; then docker rm -f "$container_id" > /dev/null 2>&1 || true; fi
     if (( status != 0 )) && [[ -n "${TEST_ARTIFACT_DIR:-}" ]]; then
-        docker run --rm --entrypoint bash \
+        docker run --network none --rm --entrypoint bash \
             --mount "type=bind,source=$TEST_MOUNT_ROOT,target=/test-cleanup" \
             "$IMAGE" -c 'chmod -R a+rX /test-cleanup/diagnostics'
         mkdir -p -- "$TEST_ARTIFACT_DIR/container"
@@ -23,7 +23,7 @@ cleanup() {
     fi
     # The image's app user owns queue jobs; use root in the same image to clean
     # only the isolated test mount before deleting its empty host directory.
-    docker run --rm --entrypoint bash \
+    docker run --network none --rm --entrypoint bash \
         --mount "type=bind,source=$TEST_MOUNT_ROOT,target=/test-cleanup" \
         "$IMAGE" -c 'find /test-cleanup -mindepth 1 -depth -delete'
     rmdir -- "$TEST_ROOT"
@@ -35,7 +35,7 @@ chmod 777 -- "$TEST_ROOT/diagnostics"
 touch "$TEST_ROOT/config/youtubeuploader_client_secrets.json" "$TEST_ROOT/config/youtubeuploader_request.token"
 for upload in false true; do
     for encode in false true; do
-        docker run -i --rm -e MODE=twitch -e CHANNEL=test -e CLIENT_ID=example \
+        docker run --network none -i --rm -e MODE=twitch -e CHANNEL=test -e CLIENT_ID=example \
             -e CLIENT_SECRET=example -e "UPLOAD=$upload" -e "ENCODE=$encode" \
             -e UPLOAD_BOT_NAME=smoke-test -e YOUTUBE_PRIVACY=private \
             --mount "type=bind,source=$TEST_MOUNT_ROOT/scratch,target=/etc/streamlink/scratch" \
@@ -64,7 +64,7 @@ PY
 SH
     done
 done
-count=$(docker run --rm --entrypoint bash \
+count=$(docker run --network none --rm --entrypoint bash \
     --mount "type=bind,source=$TEST_MOUNT_ROOT/scratch,target=/test-scratch" \
     "$IMAGE" -c 'find /test-scratch -name media.ts | wc -l')
 [[ "$count" -eq 4 ]]
@@ -85,38 +85,36 @@ else
 fi
 SH
 chmod +x -- "$TEST_ROOT/mocks/curl"
-container_id=$(docker run -d --rm -e MODE=twitch -e CHANNEL=test \
-    -e CLIENT_ID=example -e CLIENT_SECRET=example -e UPLOAD=true -e ENCODE=true \
-    -e UPLOAD_BOT_NAME=smoke-test -e YOUTUBE_PRIVACY=private \
-    -e 'PATH=/mockbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
-    --mount "type=bind,source=$TEST_MOUNT_ROOT/mocks,target=/mockbin,readonly" \
-    --mount "type=bind,source=$TEST_MOUNT_ROOT/scratch,target=/etc/streamlink/scratch" \
-    --mount "type=bind,source=$TEST_MOUNT_ROOT/storage,target=/storage" \
-    --mount "type=bind,source=$TEST_MOUNT_ROOT/config,target=/config" \
-    --mount "type=bind,source=$SOURCE_ROOT,target=/project,readonly" "$IMAGE")
-ready=false
-for ((i=0; i<20; i++)); do
-    if docker exec "$container_id" /usr/bin/python3 /project/tests/check_processes.py 2>/dev/null; then
-        ready=true
-        break
-    fi
-    sleep 1
+for mode in twitch kick; do
+    for upload in false true; do
+        for encode in false true; do
+            container_id=$(docker run --network none -d --rm -e "MODE=$mode" -e CHANNEL=test \
+                -e CLIENT_ID=example -e CLIENT_SECRET=example -e "UPLOAD=$upload" -e "ENCODE=$encode" \
+                -e UPLOAD_BOT_NAME=smoke-test -e YOUTUBE_PRIVACY=private \
+                -e 'PATH=/mockbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+                --mount "type=bind,source=$TEST_MOUNT_ROOT/mocks,target=/mockbin,readonly" \
+                --mount "type=bind,source=$TEST_MOUNT_ROOT/scratch,target=/etc/streamlink/scratch" \
+                --mount "type=bind,source=$TEST_MOUNT_ROOT/storage,target=/storage" \
+                --mount "type=bind,source=$TEST_MOUNT_ROOT/config,target=/config" \
+                --mount "type=bind,source=$SOURCE_ROOT,target=/project,readonly" "$IMAGE")
+            ready=false
+            for ((i=0; i<20; i++)); do
+                if docker exec "$container_id" /usr/bin/python3 /project/tests/check_processes.py 2>/dev/null; then
+                    ready=true
+                    break
+                fi
+                sleep 1
+            done
+            if [[ "$ready" != true ]]; then docker logs "$container_id"; exit 1; fi
+            docker stop --time 10 "$container_id" > /dev/null
+            container_id=''
+        done
+    done
 done
-if [[ "$ready" != true ]]; then docker logs "$container_id"; exit 1; fi
-docker stop --time 10 "$container_id" > /dev/null
-container_id=''
 # Run media and recovery checks with the actual image's Debian tools as apps.
-docker run --rm --entrypoint bash --user apps \
+docker run --network none --rm --entrypoint bash --user apps \
     -e TEST_ARTIFACT_DIR=/test-diagnostics -e TEST_MEDIA_INTRO_SECONDS=90 -e TEST_MEDIA_MAIN_SECONDS=6 \
     --mount "type=bind,source=$TEST_MOUNT_ROOT/diagnostics,target=/test-diagnostics" \
     --mount "type=bind,source=$SOURCE_ROOT,target=/project,readonly" \
-    --workdir /project "$IMAGE" -c '
-        set -e
-        python3 tests/test_media_normalization.py
-        bash tests/test_pipeline.sh
-        bash tests/test_startup.sh
-        bash tests/test_notifications.sh
-        /usr/bin/python3 tests/test_supervisor.py
-        bash tests/test_media.sh
-    '
+    --workdir /project "$IMAGE" -c 'bash tests/run.sh --behavior-only'
 printf 'PASS: container entrypoint, app permissions, flag changes, persisted media\n'

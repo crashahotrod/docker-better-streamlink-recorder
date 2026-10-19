@@ -52,12 +52,14 @@ class MediaNormalizationTests(unittest.TestCase):
             shutil.copytree(self.job, target, dirs_exist_ok=True)
             shutil.copytree(self.fixtures, target / 'fixtures', dirs_exist_ok=True)
 
-    def generate(self, name, audio=True, vfr=False, fragmented=False):
+    def generate(self, name, audio=True, vfr=False, fragmented=False, audio_offset=0,
+                 audio_rate=44100, channels=1):
         path = self.job / name
         command = ['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
                    'testsrc2=size=160x90:rate=10:duration=2']
         if audio:
-            command += ['-f', 'lavfi', '-i', 'sine=frequency=800:duration=2', '-c:a', 'aac']
+            command += ['-itsoffset', str(audio_offset), '-f', 'lavfi', '-i',
+                        'sine=frequency=800:duration=2', '-c:a', 'aac', '-ar', str(audio_rate), '-ac', str(channels)]
         if vfr:
             command += ['-vf', r"select=not(eq(mod(n\,3)\,1))", '-fps_mode', 'vfr']
         command += ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-bf', '2', '-g', '10']
@@ -74,6 +76,18 @@ class MediaNormalizationTests(unittest.TestCase):
         media.normalize(self.job)
         self.assertEqual(self.original, media.digest(self.job / 'capture.bin'))
         return json.loads((self.job / 'normalized.json').read_text())
+
+    def cli(self, *arguments):
+        result = subprocess.run(['python3', str(ROOT / 'media.py'), arguments[0], str(self.job),
+                                 *map(str, arguments[1:])], capture_output=True, text=True, timeout=60)
+        (self.job / 'cli.stdout').write_text(result.stdout)
+        (self.job / 'cli.stderr').write_text(result.stderr)
+        return result
+
+    def assert_quarantined(self, result):
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertEqual('quarantine', json.loads((self.job / 'validation.json').read_text())['status'])
+        self.assertTrue((self.job / 'capture.bin').exists())
 
     def test_healthy(self):
         self.capture('control-single-init.mp4')
@@ -200,6 +214,142 @@ class MediaNormalizationTests(unittest.TestCase):
             media.Tools(self.job / 'diagnostics').run('disk-full',
                 ['bash', '-c', 'echo "No space left on device" >&2; exit 1'])
 
+    def test_cli_normalization_replaces_only_incomplete_candidates(self):
+        self.capture('control-single-init.mp4')
+        (self.job / 'parts').mkdir()
+        (self.job / 'parts/0001.mp4').write_bytes(b'partial output')
+        result = self.cli('normalize')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(self.original, media.digest(self.job / 'capture.bin'))
+        self.assertEqual(0, self.cli('check').returncode)
+        manifest = (self.job / 'normalized.json').read_bytes()
+        self.assert_quarantined(self.cli('normalize'))
+        self.assertEqual(manifest, (self.job / 'normalized.json').read_bytes())
+
+    def test_capture_checksum_change_is_quarantined(self):
+        self.capture('control-single-init.mp4')
+        self.normalize()
+        with (self.job / 'capture.bin').open('ab') as output:
+            output.write(b'changed')
+        self.assert_quarantined(self.cli('check'))
+
+    def test_part_checksum_change_is_quarantined(self):
+        self.capture('control-single-init.mp4')
+        self.normalize()
+        with (self.job / 'parts/0001.mp4').open('ab') as output:
+            output.write(b'changed')
+        self.assert_quarantined(self.cli('check'))
+        self.assertEqual(self.original, media.digest(self.job / 'capture.bin'))
+
+    def test_missing_part_is_retryable_without_deleting_capture(self):
+        self.capture('control-single-init.mp4')
+        self.normalize()
+        (self.job / 'parts/0001.mp4').unlink()
+        self.assertEqual(1, self.cli('check').returncode)
+        self.assertEqual('retry', json.loads((self.job / 'validation.json').read_text())['status'])
+        self.assertEqual(self.original, media.digest(self.job / 'capture.bin'))
+
+    def test_unsafe_manifest_paths_and_versions_are_rejected(self):
+        self.capture('control-single-init.mp4')
+        original = self.normalize()
+        mutations = [lambda m: m.update(version=0), lambda m: m.update(parts=[]),
+                     lambda m: m['capture'].update(file='../outside'),
+                     lambda m: m['parts'][0].update(file='../outside')]
+        for mutate in mutations:
+            manifest = json.loads(json.dumps(original))
+            mutate(manifest)
+            with self.subTest(manifest=manifest):
+                (self.job / 'normalized.json').write_text(json.dumps(manifest))
+                self.assert_quarantined(self.cli('check'))
+
+    def test_encoder_error_log_cannot_certify_success(self):
+        self.capture('control-single-init.mp4')
+        self.normalize()
+        (self.job / 'diagnostics/encode-0001.stderr').write_text('decode_slice_header error\n')
+        self.assert_quarantined(self.cli('verify', '0001', self.job / 'parts/0001.mp4', '--encoded'))
+        self.assertFalse((self.job / 'parts/0001.encoded.json').exists())
+
+    def test_publication_rejects_changed_packet_content(self):
+        self.capture('control-single-init.mp4')
+        self.normalize()
+        changed = self.job / 'changed.mp4'
+        subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(self.job / 'parts/0001.mp4'),
+                        '-c:v', 'libx264', '-crf', '35', str(changed)], check=True)
+        self.assert_quarantined(self.cli('verify', '0001', changed, '--publication'))
+
+    def test_publication_rejects_changed_timing_with_identical_packets(self):
+        self.capture('control-single-init.mp4')
+        manifest = self.normalize()
+        shifted = self.job / 'shifted.mp4'
+        subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-itsoffset', '1', '-i',
+                        str(self.job / 'parts/0001.mp4'), '-c', 'copy', '-copyts', str(shifted)], check=True)
+        actual = media.Tools(self.job / 'shift-check').inspect(shifted, self.job, deep=False)
+        self.assertEqual(manifest['parts'][0]['validation']['packet_hashes'], actual['packet_hashes'])
+        self.assert_quarantined(self.cli('verify', '0001', shifted, '--publication'))
+
+    def test_empty_unknown_and_audio_only_captures_are_retained(self):
+        for payload in (b'', b'not a recognized container'):
+            with self.subTest(payload=payload):
+                (self.job / 'capture.bin').write_bytes(payload)
+                self.assert_quarantined(self.cli('normalize'))
+                self.assertEqual(payload, (self.job / 'capture.bin').read_bytes())
+        subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
+                        'sine=duration=1', '-c:a', 'aac', '-f', 'mp4', '-y', str(self.job / 'capture.bin')], check=True)
+        self.assert_quarantined(self.cli('normalize'))
+
+    def test_fragment_track_associations_must_be_unambiguous(self):
+        original = (self.fixtures / 'intro.mp4').read_bytes()
+        for unknown_track, absolute_offset in ((True, False), (False, True)):
+            data = bytearray(original)
+            position = data.index(b'tfhd')
+            if unknown_track:
+                struct.pack_into('>I', data, position + 8, 9999)
+            if absolute_offset:
+                flags = struct.unpack_from('>I', data, position + 4)[0]
+                struct.pack_into('>I', data, position + 4, flags | 1)
+            with self.subTest(unknown_track=unknown_track, absolute_offset=absolute_offset):
+                (self.job / 'capture.bin').write_bytes(data)
+                self.assert_quarantined(self.cli('normalize'))
+                self.assertEqual(data, (self.job / 'capture.bin').read_bytes())
+
+    def test_duplicate_moov_without_file_boundary_is_retained(self):
+        path = self.fixtures / 'duplicate-same-codec.mp4'
+        data = path.read_bytes()
+        with path.open('rb') as source:
+            atoms = list(media.boxes(source, 0, len(data)))
+        seen_ftyp = False
+        output = bytearray()
+        for kind, begin, _, end in atoms:
+            if kind == b'ftyp':
+                if seen_ftyp:
+                    continue
+                seen_ftyp = True
+            output.extend(data[begin:end])
+        (self.job / 'capture.bin').write_bytes(output)
+        self.assert_quarantined(self.cli('normalize'))
+        self.assertEqual(output, (self.job / 'capture.bin').read_bytes())
+
+    def test_audio_offset_is_preserved(self):
+        source = self.generate('offset.mp4', audio_offset=0.3)
+        shutil.copyfile(source, self.job / 'capture.bin')
+        self.original = media.digest(source)
+        manifest = self.normalize()
+        expected = manifest['periods'][0]['validation']['start_times']
+        actual = manifest['parts'][0]['validation']['start_times']
+        self.assertGreater(expected[1] - expected[0], 0.2)
+        self.assertAlmostEqual(expected[1] - expected[0], actual[1] - actual[0], delta=0.025)
+
+    def test_audio_configuration_changes_produce_separate_parts(self):
+        first = self.generate('mono.mp4')
+        second = self.generate('stereo.mp4', audio_rate=48000, channels=2)
+        (self.job / 'capture.bin').write_bytes(first.read_bytes() + second.read_bytes())
+        self.original = media.digest(self.job / 'capture.bin')
+        manifest = self.normalize()
+        self.assertEqual(2, len(manifest['parts']))
+        audio = [part['validation']['signature'][1] for part in manifest['parts']]
+        self.assertEqual([1, 2], [stream['channels'] for stream in audio])
+        self.assertEqual(['44100', '48000'], [stream['sample_rate'] for stream in audio])
+
     @unittest.skipUnless(shutil.which('streamlink'), 'Streamlink HLS capture runs in the built image')
     def test_real_streamlink_hls_capture(self):
         web = self.job / 'hls'
@@ -212,7 +362,7 @@ class MediaNormalizationTests(unittest.TestCase):
             (web / f'{name}.m4s').write_bytes(b''.join(data[start:end] for kind, start, _, end in atoms if kind in (b'moof', b'mdat')))
         seconds = self.intro // 10
         (web / 'test.m3u8').write_text('#EXTM3U\n#EXT-X-VERSION:7\n'
-            f'#EXT-X-TARGETDURATION:{seconds}\n#EXT-X-MEDIA-SEQUENCE:0\n'
+            f'#EXT-X-TARGETDURATION:{max(seconds, self.main // 10)}\n#EXT-X-MEDIA-SEQUENCE:0\n'
             f'#EXT-X-MAP:URI="intro-init.mp4"\n#EXTINF:{seconds},\nintro.m4s\n'
             '#EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI="main-new-codec-init.mp4"\n'
             f'#EXTINF:{self.main // 10},\nmain-new-codec.m4s\n#EXT-X-ENDLIST\n')

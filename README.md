@@ -184,6 +184,8 @@ Supervisor (available to `/usr/bin/python3`), and `flock` installed, run
 mock network/upload operations; they require no service credentials. CI runs
 these checks separately from publishing the image. Live-service checks require
 real credentials and are not part of the automated suite.
+See [the test guide](tests/README.md) for feature coverage, container and permission
+checks, and the integration checks that still need live services or target hardware.
 
 Shell scripts use LF endings, enforced by `.gitattributes` for Windows checkouts.
 Expected negative tests print retained-input, validation, and permission

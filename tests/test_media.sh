@@ -9,8 +9,10 @@ source "$ROOT/upload.sh"
 source "$ROOT/encode.sh"
 TEST_ROOT=$(mktemp -d)
 STORAGE_DIR=$(mktemp -d /dev/shm/recorder-tests.XXXXXXXX)
+worker=''
 cleanup() {
     local status=$?
+    if [[ -n "$worker" ]]; then kill -TERM -- "-$worker" 2>/dev/null || true; wait "$worker" || true; fi
     if (( status != 0 )) && [[ -n "${TEST_ARTIFACT_DIR:-}" ]]; then
         mkdir -p -- "$TEST_ARTIFACT_DIR/media"
         cp -a -- "$TEST_ROOT/." "$TEST_ARTIFACT_DIR/media/"
@@ -31,20 +33,31 @@ cat > "$TEST_ROOT/bin/streamlink" <<'SH'
 #!/bin/bash
 set -euo pipefail
 output=''
+url="${@: -2:1}"
+quality="${!#}"
 while (($#)); do
     if [[ "$1" == --output ]]; then output="$2"; fi
     shift
 done
+if [[ "$MODE" == twitch ]]; then expected="twitch.tv/$CHANNEL"; else expected="kick.com/$CHANNEL"; fi
+[[ "$url" == "$expected" && "$quality" == best ]]
 if [[ -n "$output" ]]; then cp -- "$FIXTURE" "$output"; else cat -- "$FIXTURE"; fi
 SH
 cat > "$YOUTUBEUPLOADER_BIN" <<'SH'
 #!/bin/bash
 set -euo pipefail
 printf 'called\n' >> "$TEST_ROOT/uploads"
+args=("$@")
+input=''
+for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[i]}" == -filename ]]; then input="${args[i+1]}"; fi
+done
+[[ -s "$input" ]]
+read -r recorded_date < "${input%/parts/*}/recorded-date"
 while (($#)); do
     case "$1" in
-        -privacy) [[ "$2" == private ]] ;;
-        -title) [[ "$2" == "$(date +%m/%d/%Y) - "* ]] ;;
+        -privacy) [[ "$2" == "${YOUTUBE_PRIVACY:-public}" ]] ;;
+        -title) [[ "$2" == "$recorded_date - "* ]] ;;
         -secrets) [[ "$2" == "$CONFIG_DIR/youtubeuploader_client_secrets.json" ]] ;;
         -cache) [[ "$2" == "$CONFIG_DIR/youtubeuploader_request.token" ]] ;;
         -metaJSONout) printf '{"id":"test-video"}\n' > "$2" ;;
@@ -98,6 +111,28 @@ done
 [[ $(wc -l < "$TEST_ROOT/uploads") -eq 8 ]]
 [[ $(stat -c %d "$SCRATCH_ROOT") != "$(stat -c %d "$STORAGE_DIR")" ]]
 printf 'PASS: real media and metadata, both APIs, all 16 routes, separate filesystems\n'
+
+# Every supported visibility is passed to the uploader for each captured route.
+UPLOAD=true ENCODE=false REMUX=false
+for YOUTUBE_PRIVACY in public unlisted; do
+    record_stream visibility media 8
+    identifier="${RECORDING_JOB##*/}"
+    run_queue_once normalize normalize_job
+    upload_job "$WORK_DIR/upload/$identifier"
+    publish_recording "$WORK_DIR/publish/$identifier"
+    [[ ! -d "$WORK_DIR/publish/$identifier" ]]
+done
+[[ $(wc -l < "$TEST_ROOT/uploads") -eq 10 ]]
+# Default visibility and title date use persisted job metadata on a later retry.
+unset YOUTUBE_PRIVACY
+record_stream dated media 8
+identifier="${RECORDING_JOB##*/}"
+run_queue_once normalize normalize_job
+printf '01/02/2000\n' > "$WORK_DIR/upload/$identifier/recorded-date"
+upload_job "$WORK_DIR/upload/$identifier"
+publish_recording "$WORK_DIR/publish/$identifier"
+[[ $(wc -l < "$TEST_ROOT/uploads") -eq 11 && ! -d "$WORK_DIR/publish/$identifier" ]]
+export YOUTUBE_PRIVACY=private
 
 # Explicit encoding preserves variable presentation times and optional audio.
 FIXTURE="$TEST_ROOT/variable.mp4"
@@ -155,8 +190,51 @@ done
 [[ -f "$TEST_ROOT/encoding-started" ]]
 kill -TERM -- "-$worker"
 wait "$worker" || true
+worker=''
 [[ -s "$job/capture.bin" && -s "$job/parts/0001.encoded.mp4" ]]
 # A fresh process obtains the released lock and replaces only the partial output.
 WORKER_ONCE=true bash "$ROOT/encode.sh"
 [[ ! -d "$job" ]]
 printf 'PASS: invalid media retained; interrupted encode resumes in a fresh process\n'
+
+# Interrupt the Python normalizer and all its FFmpeg children, then resume.
+UPLOAD=false ENCODE=false REMUX=true
+record_stream normalization media 10
+job="$WORK_DIR/normalize/${RECORDING_JOB##*/}"
+original=$(file_hash "$job/capture.bin")
+mkdir -- "$TEST_ROOT/normalizer-bin"
+cat > "$TEST_ROOT/normalizer-bin/ffmpeg" <<'SH'
+#!/bin/bash
+echo 'partial validation output'
+touch "$TEST_ROOT/normalization-started"
+sleep 60
+SH
+chmod +x -- "$TEST_ROOT/normalizer-bin/ffmpeg"
+PATH="$TEST_ROOT/normalizer-bin:$PATH" WORKER_ONCE=true setsid bash "$ROOT/normalize.sh" &
+worker=$!
+for ((i=0; i<100; i++)); do
+    [[ ! -f "$TEST_ROOT/normalization-started" ]] || break
+    sleep 0.1
+done
+[[ -f "$TEST_ROOT/normalization-started" ]]
+kill -TERM -- "-$worker"
+wait "$worker" || true
+worker=''
+[[ $(file_hash "$job/capture.bin") == "$original" && ! -f "$job/normalized.json" ]]
+
+# A subsequent ENOSPC from FFmpeg remains retryable, with the same recovery input.
+cat > "$TEST_ROOT/normalizer-bin/ffmpeg" <<'SH'
+#!/bin/bash
+echo 'No space left on device' >&2
+exit 1
+SH
+PATH="$TEST_ROOT/normalizer-bin:$PATH" WORKER_ONCE=true bash "$ROOT/normalize.sh"
+[[ $(file_hash "$job/capture.bin") == "$original" && -f "$job/normalize.retry-at" ]]
+jq -e '.status == "retry"' "$job/validation.json" > /dev/null
+printf '0\n' > "$job/normalize.retry-at"
+WORKER_ONCE=true bash "$ROOT/normalize.sh"
+job="$WORK_DIR/publish/${job##*/}"
+[[ $(file_hash "$job/capture.bin") == "$original" && -f "$job/normalized.json" ]]
+publish_recording "$job"
+[[ ! -d "$job" ]]
+printf 'PASS: interrupted normalization and simulated disk-full resume with original bytes intact\n'

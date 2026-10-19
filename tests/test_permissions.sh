@@ -31,6 +31,17 @@ printf 'preserved' > "$RECORDING_JOB/media.ts"
 SH
 # Reinitialization preserves pending media and repairs ownership on new paths.
 prepare_directories
-gosu "$USER_NAME" test -w "$WORK_DIR/active"
+for stage in active normalize quarantine upload encode publish; do
+    gosu "$USER_NAME" test -w "$WORK_DIR/$stage"
+done
 [[ $(find "$WORK_DIR/active" -name media.ts -exec cat {} \;) == preserved ]]
+UPLOAD=true
+touch "$CONFIG_DIR/youtubeuploader_client_secrets.json" "$CONFIG_DIR/youtubeuploader_request.token"
+chown "$USER_NAME:$USER_NAME" "$CONFIG_DIR"/*
+for filename in youtubeuploader_client_secrets.json youtubeuploader_request.token; do
+    chmod 000 -- "$CONFIG_DIR/$filename"
+    if validate_upload_credentials 2>/dev/null; then echo "Unreadable $filename accepted" >&2; exit 1; fi
+    chmod 600 -- "$CONFIG_DIR/$filename"
+done
+validate_upload_credentials
 printf 'PASS: fresh/reused directories writable as application user; media preserved\n'

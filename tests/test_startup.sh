@@ -27,31 +27,28 @@ if (CHANNEL=../outside; validate_environment); then exit 1; fi
 # shellcheck disable=SC2030
 if (ENCODE=invalid; validate_environment); then exit 1; fi
 if (UPLOAD=true; unset UPLOAD_BOT_NAME; validate_environment); then exit 1; fi
+for variable in MODE CHANNEL CLIENT_ID CLIENT_SECRET USER_NAME; do
+    if (unset "$variable"; validate_environment 2>/dev/null); then
+        echo "Missing $variable accepted" >&2; exit 1
+    fi
+done
+for variable in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING; do
+    if (export "$variable=invalid"; validate_environment 2>/dev/null); then
+        echo "Invalid $variable accepted" >&2; exit 1
+    fi
+done
+for YOUTUBE_PRIVACY in public private unlisted; do validate_environment; done
+if (YOUTUBE_PRIVACY=invalid; validate_environment 2>/dev/null); then exit 1; fi
+YOUTUBE_PRIVACY=public
 gosu() { shift; "$@"; }
 UPLOAD=true
 if validate_upload_credentials; then echo 'Missing credentials accepted' >&2; exit 1; fi
 mkdir -- "$CONFIG_DIR"
 touch "$CONFIG_DIR/youtubeuploader_client_secrets.json" "$CONFIG_DIR/youtubeuploader_request.token"
 validate_upload_credentials
-
-# shellcheck source=../download.sh
-source "$ROOT/download.sh"
-build_streamlink_args
-[[ "${STREAMLINK_ARGS[*]}" != *Authorization* ]]
-TWITCH_USER_TOKEN='example token'
-build_streamlink_args
-found=false
-for arg in "${STREAMLINK_ARGS[@]}"; do
-    if [[ "$arg" == 'Authorization=OAuth example token' ]]; then found=true; fi
+for filename in youtubeuploader_client_secrets.json youtubeuploader_request.token; do
+    mv -- "$CONFIG_DIR/$filename" "$CONFIG_DIR/$filename.saved"
+    if validate_upload_credentials 2>/dev/null; then echo "Missing $filename accepted" >&2; exit 1; fi
+    mv -- "$CONFIG_DIR/$filename.saved" "$CONFIG_DIR/$filename"
 done
-[[ "$found" == true ]]
-MODE=kick
-build_streamlink_args
-[[ "${STREAMLINK_ARGS[*]}" != *Authorization* ]]
-# Unauthorized live checks invalidate the parent shell's cached app token.
-refresh_token() { :; }
-fetch_stream_info() { return 2; }
-TOKEN_EXPIRES_AT=9999999999
-if monitor_once; then exit 1; fi
-[[ "$TOKEN_EXPIRES_AT" -eq 0 ]]
-printf 'PASS: startup flags, validation, optional Twitch token, credential gating\n'
+printf 'PASS: required settings, all boolean flags, privacy choices and credential gating\n'

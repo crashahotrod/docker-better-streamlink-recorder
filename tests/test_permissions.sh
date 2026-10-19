@@ -8,6 +8,12 @@ source "$ROOT/entrypoint.sh"
 TEST_ROOT=$(mktemp -d)
 trap 'find "$TEST_ROOT" -depth -delete' EXIT
 chmod 755 -- "$TEST_ROOT"
+# Hosted runners may keep their checkout behind a private home directory.
+# Stage only the library needed by the app user, without changing checkout ACLs.
+mkdir -- "$TEST_ROOT/tools"
+chmod 755 -- "$TEST_ROOT/tools"
+cp -- "$ROOT/pipeline.sh" "$TEST_ROOT/tools/pipeline.sh"
+chmod 644 -- "$TEST_ROOT/tools/pipeline.sh"
 export MODE=twitch CHANNEL=test CLIENT_ID=example CLIENT_SECRET=example
 export USER_NAME="${TEST_APP_USER:?Set TEST_APP_USER to an existing non-root user}"
 [[ $(id -u "$USER_NAME") -ne 0 ]]
@@ -16,7 +22,7 @@ export CONFIG_DIR="$TEST_ROOT/config" LOG_DIR="$TEST_ROOT/log" DBUS_RUN_DIR="$TE
 validate_environment
 prepare_directories
 validate_upload_credentials
-gosu "$USER_NAME" bash -s -- "$ROOT" <<'SH'
+gosu "$USER_NAME" bash -s -- "$TEST_ROOT/tools" <<'SH'
 set -euo pipefail
 source "$1/pipeline.sh"
 pipeline_init

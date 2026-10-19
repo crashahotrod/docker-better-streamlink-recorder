@@ -25,6 +25,7 @@ jobs:
         run: |
           sudo useradd --create-home --user-group recorder-test
           sudo TEST_APP_USER=recorder-test bash tests/test_permissions.sh
+          sudo TEST_APP_USER=recorder-test bash tests/test_permissions_isolation.sh
       - name: Validate Compose sample
         run: docker compose -f docker-compose.yml.sample config --quiet
       - name: Build local test image

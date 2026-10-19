@@ -33,5 +33,5 @@ streamlink() {
 }
 ffprobe() { printf '{"streams":[{"codec_type":"video"}]}\n'; }
 record_stream "$message" test 123
-[[ -f "$WORK_DIR/publish/${RECORDING_JOB##*/}/completed" ]]
+[[ -f "$WORK_DIR/normalize/${RECORDING_JOB##*/}/completed" ]]
 printf 'PASS: Discord JSON escaping and safe HTTP/transport failure handling\n'

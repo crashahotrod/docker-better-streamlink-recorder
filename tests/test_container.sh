@@ -12,7 +12,15 @@ if command -v cygpath > /dev/null; then
     export MSYS_NO_PATHCONV=1
 fi
 cleanup() {
+    local status=$?
     if [[ -n "$container_id" ]]; then docker rm -f "$container_id" > /dev/null 2>&1 || true; fi
+    if (( status != 0 )) && [[ -n "${TEST_ARTIFACT_DIR:-}" ]]; then
+        docker run --rm --entrypoint bash \
+            --mount "type=bind,source=$TEST_MOUNT_ROOT,target=/test-cleanup" \
+            "$IMAGE" -c 'chmod -R a+rX /test-cleanup/diagnostics'
+        mkdir -p -- "$TEST_ARTIFACT_DIR/container"
+        cp -a -- "$TEST_ROOT/diagnostics/." "$TEST_ARTIFACT_DIR/container/"
+    fi
     # The image's app user owns queue jobs; use root in the same image to clean
     # only the isolated test mount before deleting its empty host directory.
     docker run --rm --entrypoint bash \
@@ -22,6 +30,8 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -- "$TEST_ROOT/scratch" "$TEST_ROOT/storage" "$TEST_ROOT/config"
+mkdir -- "$TEST_ROOT/diagnostics"
+chmod 777 -- "$TEST_ROOT/diagnostics"
 touch "$TEST_ROOT/config/youtubeuploader_client_secrets.json" "$TEST_ROOT/config/youtubeuploader_request.token"
 for upload in false true; do
     for encode in false true; do
@@ -40,7 +50,7 @@ source /etc/streamlink/tools/pipeline.sh
 pipeline_init
 new_recording_job smoke test 1
 printf 'preserve across restart' > "$RECORDING_JOB/media.ts"
-for stage in active upload encode publish; do [[ -w "$WORK_DIR/$stage" ]]; done
+for stage in active normalize quarantine upload encode publish; do [[ -w "$WORK_DIR/$stage" ]]; done
 /usr/bin/python3 - <<'PY'
 import os
 from supervisor.options import ServerOptions
@@ -49,7 +59,7 @@ options.realize(args=['-c', '/etc/supervisor/conf.d/supervisord.conf'])
 programs = {p.name: p.autostart for g in options.process_group_configs for p in g.process_configs}
 assert programs['streamlink_upload'] == (os.environ['UPLOAD'] == 'true')
 assert programs['streamlink_encode'] == (os.environ['ENCODE'] == 'true')
-assert programs['streamlink_download'] and programs['streamlink_publish']
+assert programs['streamlink_download'] and programs['streamlink_publish'] and programs['streamlink_normalize']
 PY
 SH
     done
@@ -97,9 +107,12 @@ docker stop --time 10 "$container_id" > /dev/null
 container_id=''
 # Run media and recovery checks with the actual image's Debian tools as apps.
 docker run --rm --entrypoint bash --user apps \
+    -e TEST_ARTIFACT_DIR=/test-diagnostics -e TEST_MEDIA_INTRO_SECONDS=90 -e TEST_MEDIA_MAIN_SECONDS=6 \
+    --mount "type=bind,source=$TEST_MOUNT_ROOT/diagnostics,target=/test-diagnostics" \
     --mount "type=bind,source=$SOURCE_ROOT,target=/project,readonly" \
     --workdir /project "$IMAGE" -c '
         set -e
+        python3 tests/test_media_normalization.py
         bash tests/test_pipeline.sh
         bash tests/test_startup.sh
         bash tests/test_notifications.sh

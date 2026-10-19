@@ -75,19 +75,11 @@ record_stream() {
     if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
         notify_discord "**$CHANNEL is LIVE!**"$'\n'"Title: $title" || true
     fi
-    if [[ "${REMUX:-false}" == true ]]; then
-        output="$RECORDING_JOB/media.mp4"
-        if ! streamlink "${STREAMLINK_ARGS[@]}" --stdout "$url" best | \
-            ffmpeg -nostdin -n -v error -i pipe:0 -c copy -f mp4 "$output"; then
-            log_failure 'Recording interrupted; active files retained' "$RECORDING_JOB"
-            return 1
-        fi
-    else
-        output="$RECORDING_JOB/media.ts"
-        if ! streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" best; then
-            log_failure 'Recording interrupted; active files retained' "$RECORDING_JOB"
-            return 1
-        fi
+    # Keep the original independent of normalization failures and decoder exits.
+    output="$RECORDING_JOB/capture.bin"
+    if ! streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" best; then
+        log_failure 'Recording interrupted; active capture retained' "$RECORDING_JOB"
+        return 1
     fi
     complete_recording "$RECORDING_JOB" || {
         log_failure 'Completion pending; files retained' "$RECORDING_JOB"

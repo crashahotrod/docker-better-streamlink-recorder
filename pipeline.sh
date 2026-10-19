@@ -4,7 +4,7 @@
 pipeline_init() {
     WORK_DIR="${SCRATCH_ROOT:-/etc/streamlink/scratch}/${MODE:?}/${CHANNEL:?}/queue-v2"
     STORAGE_DIR="${STORAGE_DIR:-/storage}"
-    mkdir -p -- "$WORK_DIR"/{active,upload,encode,publish} || return 1
+    mkdir -p -- "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish} || return 1
 }
 
 log_failure() {
@@ -19,49 +19,91 @@ write_state() {
     printf '%s\n' "$2" > "$1.tmp" && mv -f -- "$1.tmp" "$1"
 }
 
-validate_media() {
-    local kind
-    [[ -s "$1" ]] || return 1
-    kind=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_type \
-        -of json "$1") || return 1
-    jq -e '.streams | any(.codec_type == "video")' <<< "$kind" > /dev/null
+MEDIA_TOOL="$(dirname -- "${BASH_SOURCE[0]}")/media.py"
+
+media_command() {
+    python3 "$MEDIA_TOOL" "$@"
+}
+
+quarantine_job() {
+    local job="$1"
+    log_failure 'Media requires recovery; capture retained' "$job"
+    if [[ "${job%/*}" != "$WORK_DIR/quarantine" ]]; then
+        advance_job "$job" quarantine || return 1
+    fi
+    return 1
+}
+
+ensure_normalized_job() {
+    local job="$1" status
+    if [[ -f "$job/normalized.json" ]]; then
+        if media_command check "$job"; then return 0; else status=$?; fi
+    else
+        if media_command normalize "$job"; then return 0; else status=$?; fi
+    fi
+    if [[ "$status" -eq 2 ]]; then quarantine_job "$job"; fi
+    return 1
+}
+
+verify_part() {
+    local job="$1" status
+    if media_command verify "$@"; then return 0; else status=$?; fi
+    if [[ "$status" -eq 2 ]]; then quarantine_job "$job"; fi
+    return 1
+}
+
+part_ids() {
+    jq -r '.parts[].id' "$1/normalized.json"
+}
+
+part_file() {
+    local relative
+    relative=$(jq -er --arg id "$2" '.parts[] | select(.id == $id) | .file' "$1/normalized.json") || return 1
+    [[ "$relative" =~ ^parts/[0-9]{4}\.(mp4|ts)$ ]] || return 1
+    printf '%s/%s\n' "$1" "$relative"
+}
+
+part_destination() {
+    local job="$1" id="$2" extension="$3" stem season count
+    read_field "$job/stem" stem && read -r season < "$job/season" || return 1
+    [[ "$season" =~ ^[0-9]{6}$ && "$stem" != */* && -n "$stem" && "$id" =~ ^[0-9]{4}$ ]] || return 1
+    [[ "$extension" == mp4 || "$extension" == ts ]] || return 1
+    count=$(jq '.parts | length' "$job/normalized.json") || return 1
+    if (( count > 1 )); then stem="$stem - part-$id"; fi
+    printf '%s/%s/Season %s/%s.%s\n' "$STORAGE_DIR" "$CHANNEL" "$season" "$stem" "$extension"
 }
 
 file_hash() {
-    sha256sum < "$1" | cut -d ' ' -f 1
+    local value
+    value=$(sha256sum < "$1") || return 1
+    printf '%s\n' "${value%% *}"
 }
 
-# Temporary copy and final hard link share a filesystem. Linking commits without
-# overwriting an existing name, including when another process publishes first.
-publish_job() (
-    local job="$1" input="$2" extension="$3" stem title season destination final
-    local temporary='' checksum
-    read_field "$job/stem" stem && read_field "$job/title" title || return 1
-    read -r season < "$job/season" || return 1
-    [[ "$season" =~ ^[0-9]{6}$ && "$stem" != */* && -n "$stem" ]] || return 1
-    destination="$STORAGE_DIR/$CHANNEL/Season $season"
-    final="$destination/$stem.$extension"
-    mkdir -p -- "$destination" || return 1
-    if [[ -e "$final" ]]; then
-        [[ -f "$job/published.sha256" ]] || return 1
-        read -r checksum < "$job/published.sha256" || return 1
-        [[ "$checksum" == "$(file_hash "$final")" ]]
-        return
-    fi
-    validate_media "$input" || return 1
-    temporary=$(mktemp -d "$destination/.publish.XXXXXXXX") || return 1
+part_committed() {
+    local final checksum
+    final=$(part_destination "$1" "$2" "$3") || return 1
+    [[ -f "$final" && -f "$1/parts/$2.published.sha256" ]] || return 1
+    read -r checksum < "$1/parts/$2.published.sha256" || return 1
+    [[ "$checksum" == "$(file_hash "$final")" ]]
+}
+
+publish_part() (
+    local job="$1" id="$2" input="$3" extension="${3##*.}" final temporary='' title checksum
+    final=$(part_destination "$job" "$id" "$extension") || return 1
+    if [[ -e "$final" ]]; then part_committed "$job" "$id" "$extension"; return; fi
+    read_field "$job/title" title || return 1
+    mkdir -p -- "${final%/*}" || return 1
+    temporary=$(mktemp -d "${final%/*}/.publish.XXXXXXXX") || return 1
     trap 'rm -f -- "$temporary/media.$extension"; rmdir -- "$temporary"' EXIT
-    cp -- "$input" "$temporary/media.$extension" || return 1
-    cmp -s -- "$input" "$temporary/media.$extension" || return 1
+    cp -- "$input" "$temporary/media.$extension" && cmp -s -- "$input" "$temporary/media.$extension" || return 1
     if [[ "$extension" == mp4 ]]; then
-        exiftool -q -q -title="$title" -api largefilesupport=1 \
-            -overwrite_original "$temporary/media.$extension" || return 1
+        exiftool -q -q -title="$title" -api largefilesupport=1 -overwrite_original "$temporary/media.$extension" || return 1
     fi
-    validate_media "$temporary/media.$extension" || return 1
+    verify_part "$job" "$id" "$temporary/media.$extension" --publication || return 1
     checksum=$(file_hash "$temporary/media.$extension") || return 1
-    write_state "$job/published.extension" "$extension" &&
-        write_state "$job/published.sha256" "$checksum" || return 1
-    ln -- "$temporary/media.$extension" "$final" || return 1
+    write_state "$job/parts/$id.published.extension" "$extension" &&
+        write_state "$job/parts/$id.published.sha256" "$checksum" || return 1
+    ln -- "$temporary/media.$extension" "$final"
 )
 
 job_media() {
@@ -75,9 +117,12 @@ job_media() {
 }
 
 remove_completed_job() {
-    # Generated queue directory; called only after publication has succeeded.
-    local job="$1" retired
-    [[ "$job" == "$WORK_DIR/"* && "$job" != "$WORK_DIR/" ]] || return 1
+    local job="$1" retired id extension
+    [[ "$job" == "$WORK_DIR/"* && "$job" != "$WORK_DIR/" && -f "$job/normalized.json" ]] || return 1
+    while IFS= read -r id; do
+        read -r extension < "$job/parts/$id.published.extension" || return 1
+        part_committed "$job" "$id" "$extension" || return 1
+    done < <(part_ids "$job")
     retired="${job%/*}/.completed.${job##*/}"
     [[ ! -e "$retired" ]] || return 1
     mv -T -n -- "$job" "$retired" && [[ ! -d "$job" ]] || return 1
@@ -85,7 +130,9 @@ remove_completed_job() {
 }
 
 cleanup_retired_job() {
-    find "$1" -maxdepth 1 -type f -exec rm -- {} + && rmdir -- "$1"
+    # Only atomically retired, fully published generated jobs reach this path.
+    [[ "$1" == "$WORK_DIR/"*/.completed.recording.* ]] || return 1
+    find "$1" -depth -delete
 }
 
 new_recording_job() {
@@ -101,7 +148,7 @@ import sys
 author, title, season, episode, mode, stream, identifier = sys.argv[1:]
 prefix = f'{author.replace("/", "-")} - s{season}e{episode} - '
 suffix = f' - {{edition-{mode}}} - {stream}-{identifier}'
-budget = 240 - len((prefix + suffix).encode('utf-8'))
+budget = 224 - len((prefix + suffix).encode('utf-8'))
 if budget < 0:
     raise SystemExit('Recording identity exceeds filename limit')
 safe = title.replace('/', '-').encode('utf-8')[:budget].decode('utf-8', 'ignore')
@@ -112,6 +159,7 @@ PY
         printf '%s\0' "$title" > "$RECORDING_JOB/title" &&
         printf '%s\n' "$season" > "$RECORDING_JOB/season" &&
         date +%m/%d/%Y > "$RECORDING_JOB/recorded-date" &&
+        printf '%s\n' "${REMUX:-false}" > "$RECORDING_JOB/remux-required" &&
         printf '%s\n' "${UPLOAD:-false}" > "$RECORDING_JOB/upload-required" &&
         printf '%s\n' "${ENCODE:-false}" > "$RECORDING_JOB/encode-required"
 }
@@ -138,33 +186,32 @@ route_recording() {
 
 complete_recording() {
     local input
-    input=$(job_media "$1") && validate_media "$input" || return 1
-    write_state "$1/completed" true && route_recording "$1"
+    if [[ -f "$1/capture.bin" ]]; then input="$1/capture.bin"; else input=$(job_media "$1") || return 1; fi
+    [[ -s "$input" ]] || return 1
+    write_state "$1/completed" true && advance_job "$1" normalize
+}
+
+normalize_job() {
+    ensure_normalized_job "$1" && route_recording "$1"
 }
 
 recover_completed_recordings() {
     local job
     while IFS= read -r -d '' job; do
         if [[ -f "$job/completed" ]]; then
-            route_recording "$job" || log_failure 'Completed recording pending' "$job"
+            advance_job "$job" normalize || log_failure 'Completed recording pending' "$job"
         fi
     done < <(find "$WORK_DIR/active" -mindepth 1 -maxdepth 1 -type d -print0)
 }
 
 publish_recording() {
-    local input
-    if recover_publication "$1"; then return 0; fi
-    input=$(job_media "$1") || return 1
-    publish_job "$1" "$input" "${input##*.}" && remove_completed_job "$1"
-}
-
-recover_publication() {
-    local extension
-    [[ -f "$1/published.extension" && -f "$1/published.sha256" ]] || return 1
-    read -r extension < "$1/published.extension" || return 1
-    [[ "$extension" == mp4 || "$extension" == ts ]] || return 1
-    # publish_job checks a committed destination before reading its input.
-    publish_job "$1" '' "$extension" && remove_completed_job "$1"
+    local job="$1" id input
+    ensure_normalized_job "$job" || return 1
+    while IFS= read -r id; do
+        input=$(part_file "$job" "$id") || return 1
+        publish_part "$job" "$id" "$input" || return 1
+    done < <(part_ids "$job")
+    remove_completed_job "$job"
 }
 
 # flock is released by the kernel after a crash; no stale PID files or claims.

@@ -34,12 +34,12 @@ RUN mkdir -p /etc/streamlink/scratch
 RUN mkdir -p /var/run/dbus
 
 COPY ./download.sh /etc/streamlink/tools/
-COPY ./pipeline.sh ./publish.sh /etc/streamlink/tools/
+COPY ./pipeline.sh ./publish.sh ./normalize.sh ./recover.sh ./media.py /etc/streamlink/tools/
 COPY ./encode.sh /etc/streamlink/tools/
 COPY ./upload.sh /etc/streamlink/tools/
 COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY pipeline.sh /usr/local/bin/pipeline.sh
+COPY pipeline.sh media.py /usr/local/bin/
 RUN chmod +x /etc/streamlink/tools/*.sh /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--","entrypoint.sh"]

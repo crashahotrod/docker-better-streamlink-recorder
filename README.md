@@ -24,7 +24,7 @@ ownership before starting the application. Existing scratch files are preserved.
 | `CHANNEL` | Required | Channel slug, without URL or path separators. |
 | `CLIENT_ID` | Required | Application client ID for the selected service's live-status API. |
 | `CLIENT_SECRET` | Required | Corresponding application client secret. |
-| `REMUX` | `false` | Remux to MP4 during recording. Otherwise preserve the raw transport stream as `.ts`. |
+| `REMUX` | `false` | After capture, stream-copy TS to MP4. MP4 input is normalized as MP4 regardless of this flag. |
 | `ENCODE` | `false` | Convert completed recordings to H.264/AAC MP4 using CRF 23 and the medium preset. |
 | `UPLOAD` | `false` | Upload completed recordings to YouTube before optional encoding. |
 | `UPLOAD_BOT_NAME` | Required for uploads | Name included in the upload description. |
@@ -41,20 +41,34 @@ for live-status checks.
 
 ## Processing behavior
 
-`REMUX` selects the recording container independently of the processing route:
+Every recording first captures Streamlink's original bytes in `capture.bin`.
+After capture completes, a normalization worker detects TS or MP4 from its contents,
+checks every initialization period, and creates verified outputs. `REMUX=true`
+now runs after capture, so an FFmpeg failure cannot interrupt the recorder.
+MPEG-TS remains TS when `REMUX=false`; fragmented MP4 always becomes MP4.
+
+Repeated compatible MP4 periods are joined only if frame content, sample counts,
+and presentation timing survive. Codec/track changes, or boundaries that cannot
+be joined without changing A/V timing, become stable ` - part-0001.mp4`,
+` - part-0002.mp4` files. Repair uses stream copy; `ENCODE=true` explicitly requests
+H.264/AAC encoding of those verified parts. Uncertain inputs stay in quarantine.
+
+The processing route follows normalization:
 
 | UPLOAD | ENCODE | Completed recording route |
 | --- | --- | --- |
-| `false` | `false` | Store the original TS or remuxed MP4. |
+| `false` | `false` | Store verified TS or MP4 parts. |
 | `false` | `true` | Encode to MP4, then store. |
-| `true` | `false` | Upload, then store the original TS or remuxed MP4. |
+| `true` | `false` | Upload each verified part, then store. |
 | `true` | `true` | Upload, then encode to MP4, then store. |
 
 Stored recordings use `<channel>/Season YYYYMM/` with Plex-style season and
 episode names. Each filename includes a stream identifier and unique recording
 suffix so segments and reconnects do not overwrite each other. MP4 files receive
-title metadata; TS files retain their title in the filename. Encoding verifies
-that the output contains video, and only removes its source after publication.
+title metadata; TS files retain their title in the filename. Validation checks decoding, video frame counts and identity, timing, audio coverage,
+and MP4 sample accounting. Encoding must preserve the verified video frame count
+and timing. The original capture is removed only after every part is published
+and checksummed.
 Audio is optional for streams that do not provide it.
 
 ## Volumes and credentials
@@ -86,7 +100,10 @@ New recordings use `/etc/streamlink/scratch/<mode>/<channel>/queue-v2/`:
 
 - `active/`: in-progress or interrupted jobs. Only explicitly completed jobs can
   advance automatically; uncertain partial recordings stay here for inspection.
-- `upload/`: completed recordings awaiting upload or local upload handoff.
+- `normalize/`: completed captures awaiting validation and stream-copy repair.
+- `quarantine/`: uncertain or corrupt jobs retained for inspection, without automatic
+  upload, encoding, publication, or deletion.
+- `upload/`: verified parts awaiting upload or local upload handoff.
 - `encode/`: recordings awaiting successful encoding and publication.
 - `publish/`: recordings awaiting publication without encoding.
 
@@ -97,13 +114,27 @@ workers for the same stage. Failures retry with backoff from 30 seconds up to
 15 minutes; other jobs continue to be considered. Individual uploader attempts
 have a six-hour timeout. Inspect logs for the job path and failing stage.
 
-An `uploaded` marker prevents another upload if a later local handoff fails.
-A crash between remote upload success and saving this marker can still result
-in a duplicate upload. For an uncertain attempt, stop the container, inspect the
-job's `remote.json` and the YouTube channel, and reconcile the result before
-restarting. Confirmed successful uploads can be acknowledged by creating an
-`uploaded` file containing `true` in that specific job. Do not acknowledge an
-upload without verifying its remote result.
+Each `parts/0001.uploaded` receipt prevents repeating a successful part after a
+local failure; other parts remain pending. A crash between remote success and
+saving this receipt can still duplicate an upload. For an uncertain attempt,
+stop the container and reconcile that part's `parts/0001.remote.json` with the
+YouTube channel before resuming. A confirmed upload can be acknowledged with
+`true` in that part's `.uploaded` file. Old job-wide `uploaded`/publication receipts
+require manual reconciliation and are quarantined rather than re-uploaded.
+
+`normalized.json` records capture and output checksums, source byte ranges,
+track/codec settings, sample/frame counts, timestamps, and decoded-content hashes.
+`validation.json` gives the current result; `diagnostics/` keeps command arguments,
+exit codes, timing, and stderr. Decoder errors are checked even when FFmpeg exits
+zero. Full validation decodes media and costs CPU; it does not re-encode it.
+
+Reserve scratch space for the original capture, extracted periods, and candidates
+(roughly three times the capture size, plus diagnostics and optional encoded
+outputs). Decoded frame hashes are streamed to disk and condensed after success;
+failed attempts retain their diagnostics. Publication needs another output-sized
+temporary copy on storage. Failed repair never deletes the capture to free space.
+Validation cost depends on resolution, frame rate, and available CPU. The
+development benchmark below can measure overhead on generated recordings.
 
 An interrupted publication is recognized from its saved checksum and final
 file. Workers finish cleanup when the checksum matches. Incomplete temporary
@@ -125,12 +156,25 @@ copy usable recordings to storage or convert them separately. Do not delete the
 originals until their stored copies have been verified.
 
 For interrupted jobs in `queue-v2/active`, stop the recorder before inspection.
-Check media with `ffprobe` and repair a copy where needed. A deliberately
-recovered, usable job can be completed by sourcing `pipeline.sh`, calling
-`pipeline_init`, then calling `complete_recording` with that job's full path in
-an offline container using the same volumes and environment. Never promote an
-active writer or move a bare media file into a ready queue: ready work consists
-of the entire job directory and its metadata.
+Only explicitly completed jobs may be resumed; never promote an active writer.
+For a completed quarantined job without an existing `normalized.json`, run the
+recovery tool in an offline container with the same volumes and environment:
+
+```sh
+docker compose stop streamlinkrecorder
+docker compose run --rm --no-deps streamlinkrecorder bash /etc/streamlink/tools/recover.sh \
+  /etc/streamlink/scratch/twitch/CHANNEL/queue-v2/quarantine/recording.JOB
+```
+
+Replace `streamlinkrecorder` with your Compose service name and use the actual job path.
+The command writes new candidates, preserves `capture.bin` (or legacy `media.ts` /
+`media.mp4`), and queues only a verified result. It refuses existing manifests and
+legacy success receipts. A wrong init map, missing initialization, absolute fragment
+data offsets, or repeated MOOV without an independent file-type boundary may need
+the original playlist/init data or manual recovery. Keep the originals. For an
+already normalized job, inspect its manifest, receipts, and diagnostics rather
+than removing them to force a retry. An interrupted normalization can leave
+`.normalizing.*` directories; inspect these only with the container stopped.
 
 ## Development checks
 
@@ -142,4 +186,11 @@ these checks separately from publishing the image. Live-service checks require
 real credentials and are not part of the automated suite.
 
 Shell scripts use LF endings, enforced by `.gitattributes` for Windows checkouts.
-See `PLAN.md` for implementation progress and any remaining verification limits.
+Expected negative tests print retained-input, validation, and permission
+errors; a passing suite ends in `PASS`/`OK`. CI saves failed media diagnostics.
+`tests/test_media_normalization.py` covers MP4 periods, timing, completeness,
+and retained captures. With Streamlink installed it also tests local HLS capture
+through every processing route. Run the full opening regression with `TEST_MEDIA_INTRO_SECONDS=90 TEST_MEDIA_MAIN_SECONDS=6 python3 tests/test_media_normalization.py`.
+The default uses a two-second opening for fast feedback. Run
+`python3 tests/benchmark_media.py --output /tmp/new-benchmark.json` for the eight-hour
+tiny-video benchmark. Tests never use live uploads or service credentials.

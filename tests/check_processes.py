@@ -2,7 +2,7 @@
 import os
 import pathlib
 
-expected = {'download': True, 'publish': True,
+expected = {'download': True, 'publish': True, 'normalize': True,
             'upload': os.environ['UPLOAD'] == 'true',
             'encode': os.environ['ENCODE'] == 'true'}
 arguments = []

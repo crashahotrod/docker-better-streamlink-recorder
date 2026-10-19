@@ -19,5 +19,5 @@ for upload in ('true', 'false', 'true', 'false'):
         }
         assert programs['streamlink_upload'] == (upload == 'true')
         assert programs['streamlink_encode'] == (encode == 'true')
-        assert programs['streamlink_download'] and programs['streamlink_publish']
+        assert programs['streamlink_download'] and programs['streamlink_publish'] and programs['streamlink_normalize']
 print('PASS: Supervisor parses flags correctly, including enabled-to-disabled changes')

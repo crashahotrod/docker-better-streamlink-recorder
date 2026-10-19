@@ -153,8 +153,8 @@ write_status_files() {
 
     mkdir -p -- "$scratch_dir" "$WORK_DIR" 2>/dev/null || true
 
-    printf '%s\n' "$json" > "$scratch_file.tmp" && mv -f -- "$scratch_file.tmp" "$scratch_file" || true
-    printf '%s\n' "$json" > "$work_file.tmp" && mv -f -- "$work_file.tmp" "$work_file" || true
+    write_state "$scratch_file" "$json" || true
+    write_state "$work_file" "$json" || true
 }
 
 build_persistent_discord_payload() {

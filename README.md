@@ -15,6 +15,9 @@ to `streamlink-recorder:local`.
 The image runs the recorder and workers as the `apps` user (UID/GID 568 by
 default). Its root entrypoint creates the queue directories and assigns volume
 ownership before starting the application. Existing scratch files are preserved.
+Local `docker-compose.yml`, `.env` files and uploader credentials are excluded
+from Git. The Docker build context includes runtime sources, security pins and
+two platform-test helpers; local secrets, volumes and generated artifacts are excluded.
 
 ## Environment variables
 
@@ -196,3 +199,38 @@ through every processing route. Run the full opening regression with `TEST_MEDIA
 The default uses a two-second opening for fast feedback. Run
 `python3 tests/benchmark_media.py --output /tmp/new-benchmark.json` for the eight-hour
 tiny-video benchmark. Tests never use live uploads or service credentials.
+
+## Releases and dependency updates
+
+The image uses the maintained Python 3.12 slim Bookworm base. The uploader is
+built from its tagged upstream source using Go 1.27.2 and the security updates
+pinned in `build/uploader-modules.txt`; its upstream tests run during the build.
+Build tools stay in separate build stages. Keep persistent
+scratch/storage volumes when upgrading; do not prune pending or quarantined jobs.
+
+CI checks workflows, the complete amd64 suite, an offline dependency scan, and
+ARM64/ARMv7 image smoke tests before publishing. Version tags such as `v1.0.0`
+also publish `1.0.0` and `1.0`
+image tags. Use a versioned tag or digest when you need a fixed deployed version.
+This repository's `latest` tag is updated by the default release flow.
+
+Dependency automation checks for stable upstream releases, verifies them against
+the test suite, and automatically commits updates to the default branch when all
+checks pass. Commits to the default branch trigger multi-architecture image builds
+and publication. Configure `REPO_PAT` with repository contents write permission so
+pushed commits trigger downstream publication workflows.
+Image publication also requires the existing Docker Hub repository/token secrets.
+Review the Go toolchain and uploader module security pins when updating dependencies.
+The image scan blocks publication on known critical/high vulnerabilities with
+available fixes; it does not certify the absence of other vulnerabilities.
+
+Before promoting a release, confirm live Twitch/Kick capture and, when enabled,
+a private YouTube upload with your credentials. Offline tests exercise local HLS
+and mocked API responses; they cannot certify remote authentication, future
+service changes, or player/browser behavior on every target device.
+
+## License
+
+Project source is available under the [MIT License](LICENSE). Bundled dependencies
+retain their respective licenses. Uploader build provenance, module versions and
+license notices are included at `/usr/share/doc/youtubeuploader` in the image.

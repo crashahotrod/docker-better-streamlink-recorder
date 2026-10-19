@@ -10,13 +10,16 @@ package. The runner checks shell syntax and ShellCheck before behavioral tests.
 | Twitch/Kick app tokens, cache expiry, HTTP/transport failures, offline/live decisions, recording arguments, optional Twitch authentication, segment-limit setting | `test_download.sh` |
 | Required settings, boolean flags, upload visibility, missing credentials | `test_startup.sh` |
 | Discord JSON escaping, failed notifications allowing recording to continue | `test_notifications.sh` |
-| MP4 initialization periods, compatible joins, codec/track changes, audio offsets/settings, B-frames, variable timing, truncated/uncertain inputs, sample counts, source/output checksums, CLI validation, error diagnostics | `test_media_normalization.py` |
+| MP4 initialization periods, compatible joins, codec/track changes, audio-first inputs, audio offsets/settings, B-frames, variable timing, truncated/uncertain inputs, sample counts, complete manifest accounting, source/output checksums, CLI validation, error diagnostics | `test_media_normalization.py` |
 | Real TS capture and metadata through all 16 service/remux/upload/encode routes, all visibility choices, VFR encoding, separate filesystems, denied destination writes, capture retention, interrupted encode/normalization and simulated disk-full recovery | `test_media.sh` |
 | Quarantine at every consumer boundary, per-part upload/publication receipts, retries, lock exclusion, collisions, partial copies, changed final files, interrupted cleanup and offline recovery | `test_pipeline.sh` |
 | Backoff deadlines/cap, invalid retry state, queue progress despite failures, one-pass workers, completion handoff recovery, duplicate-monitor exclusion, persisted flags, Unicode filename limits and recovery path boundaries | `test_queue.sh` |
 | Worker enable/disable flags and process-group shutdown configuration | `test_supervisor.py` |
+| Stable-release dependency selection, immutable commit pins and failure without partial updates | `test_dependency_updates.py` |
 | Fresh/reused volumes, all queue directories, unreadable credentials as the application user, private checkout isolation | `test_permissions.sh`, `test_permissions_isolation.sh` |
 | Built entrypoint, persisted captures, actual workers for both services and every upload/encode flag combination, image dependencies and full HLS processing matrix | `test_container.sh` |
+| Uploader/Streamlink execution and complete codec-change repair/publication on each advertised architecture | `test_platform.sh` |
+| Known critical/high dependency vulnerabilities with available fixes; public database download separated from network-isolated image analysis | `scan_image.sh` |
 
 The permission checks run separately as root against an existing non-root user:
 
@@ -44,4 +47,11 @@ Disk-full behavior is injected without filling a volume. The long-recording
 benchmark remains an optional developer tool (`benchmark_media.py`), separate
 from functional checks. Real-service authentication, remote upload results,
 hours-long recording limits, target-specific browser behavior, player GUI
-compatibility, and non-amd64 image execution require separate integration checks.
+compatibility, and behavior on physical target devices require separate integration checks.
+CI additionally builds and smoke-tests ARM64 and ARMv7 images under QEMU before
+publication; the complete recording suite runs on amd64.
+
+Run `bash tests/scan_image.sh` after building the image to repeat the CI dependency
+scan. Only the database download needs external networking. The image scan has
+networking disabled and retains `security.json` under `TEST_ARTIFACT_DIR` when set.
+It uses Trivy 0.76.0 and excludes vulnerabilities without an available fix.

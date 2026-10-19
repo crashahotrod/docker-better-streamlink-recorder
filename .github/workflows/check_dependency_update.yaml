@@ -2,142 +2,106 @@ name: Check Dependencies for Updates
 
 on:
   schedule:
-    - cron: '15 * * * *'
+    - cron: '15 6 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: dependency-updates
+  cancel-in-progress: false
+
 jobs:
-  check_and_update:
+  check-and-update:
+    name: Check, test, and commit dependency updates
     runs-on: ubuntu-latest
     env:
-      REPO_A_OWNER: 'streamlink'
-      REPO_A_NAME: 'streamlink'
-      REPO_A_BRANCH: 'master'
-      FILE_TO_UPDATE: 'Dockerfile'
-
+      TEST_ARTIFACT_DIR: ${{ github.workspace }}/test-artifacts
     steps:
-    - name: Checkout docker-better-streamlink-recorder
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.REPO_PAT }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REPO_PAT || github.token }}
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
 
-    - name: Get latest commit hash from streamlink repo
-      id: get_latest_hash
-      run: |
-        MAX_ATTEMPTS=3
-        ATTEMPT=1
-        while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ env.REPO_A_OWNER }}/${{ env.REPO_A_NAME }}/commits/${{ env.REPO_A_BRANCH }}")
-          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
-          if [ "$HTTP_STATUS" -eq 200 ]; then
-            LATEST_HASH=$(echo "$BODY" | jq -r '.sha // empty')
-            if [ "$LATEST_HASH" != "null" ] && [ -n "$LATEST_HASH" ]; then
-              echo "LATEST_HASH=$LATEST_HASH" >> $GITHUB_OUTPUT
-              echo "Retrieved latest hash from Streamlink repo: $LATEST_HASH"
-              exit 0
-            fi
+      - name: Prepare stable dependency updates
+        id: check_diff
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT || github.token }}
+        run: |
+          python3 .github/scripts/update_dependencies.py
+          if git diff --quiet Dockerfile; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No dependency updates detected."
           else
-            LATEST_HASH=""
-            echo "HTTP Error: $HTTP_STATUS"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Stable dependency updates detected in Dockerfile."
           fi
-          if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-            echo "Error: Attempt $ATTEMPT Could not retrieve hash. Retrying in 5 seconds..."
-            sleep 5
-          else
-            echo "Error: Max attempts reached. Check github.com/${{ env.REPO_A_OWNER }}/${{ env.REPO_A_NAME }}."
+
+      - name: Install test dependencies
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl jq shellcheck gosu supervisor
+
+      - name: Validate workflows
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          docker run --rm --network none -v "$PWD:/repo:ro" --workdir /repo rhysd/actionlint:1.7.11
+
+      - name: Run shell and media checks
+        if: steps.check_diff.outputs.changed == 'true'
+        run: bash tests/run.sh
+
+      - name: Verify application user permissions
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          sudo useradd --create-home --user-group recorder-test
+          sudo TEST_APP_USER=recorder-test bash tests/test_permissions.sh
+          sudo TEST_APP_USER=recorder-test bash tests/test_permissions_isolation.sh
+
+      - name: Validate Compose sample
+        if: steps.check_diff.outputs.changed == 'true'
+        run: docker compose -f docker-compose.yml.sample config --quiet
+
+      - name: Build local test image
+        if: steps.check_diff.outputs.changed == 'true'
+        run: docker build --pull -t streamlink-recorder:test .
+
+      - name: Check container startup without live services
+        if: steps.check_diff.outputs.changed == 'true'
+        run: bash tests/test_container.sh
+
+      - name: Check release image dependencies
+        if: steps.check_diff.outputs.changed == 'true'
+        run: bash tests/scan_image.sh
+
+      - name: Retain failed check diagnostics
+        if: failure() && steps.check_diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-check-diagnostics
+          path: test-artifacts/
+          if-no-files-found: ignore
+
+      - name: Commit and push verified updates
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Dockerfile
+          git commit -m "Automated: Update stable recorder dependencies"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+
+      - name: Dispatch image build if using default token
+        if: steps.check_diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_PAT: ${{ secrets.REPO_PAT }}
+        run: |
+          if [ -z "$REPO_PAT" ]; then
+            gh workflow run docker-image.yml --ref "${{ github.event.repository.default_branch }}" || true
           fi
-          ATTEMPT=$((ATTEMPT + 1))
-        done
-        exit 1
-      
-    - name: Read current Streamlink commit hash from Dockerfile
-      id: read_current_hash
-      run: |
-        CURRENT_HASH=$(grep 'ENV streamlinkCommit=' ${{ env.FILE_TO_UPDATE }} | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
-        echo "CURRENT_HASH=$CURRENT_HASH" >> $GITHUB_OUTPUT
-        echo "Current hash in our repo: $CURRENT_HASH"
-
-    - name: Get latest tag from Youtubeuploader repo
-      id: get_ytu_latest_tag
-      run: |
-        MAX_ATTEMPTS=3
-        ATTEMPT=1
-        while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/porjo/youtubeuploader/releases/latest")
-          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
-          if [ "$HTTP_STATUS" -eq 200 ]; then
-            LATEST_TAG=$(echo "$BODY" | jq -r '.tag_name // empty')
-            if [ "$LATEST_TAG" != "null" ] && [ -n "$LATEST_TAG" ]; then
-              echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_OUTPUT
-              echo "Retrieved latest tag from youtubeuploader repo: $LATEST_TAG"
-              exit 0
-            fi
-          else
-            LATEST_TAG=""
-            echo "HTTP Error: $HTTP_STATUS"
-          fi
-          if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-            echo "Error: Attempt $ATTEMPT Could not retrieve tag. Retrying in 5 seconds..."
-            sleep 5
-          else
-            echo "Error: Max attempts reached. Check github.com/porjo/youtubeuploader/releases/latest."
-          fi
-          ATTEMPT=$((ATTEMPT + 1))
-        done
-        exit 1
-
-    - name: Read current Youtubeuploder release tag from Dockerfile
-      id: read_current_ytu_tag
-      run: |
-        CURRENT_YTU_TAG=$(grep 'ARG YTU_RELEASE=' ${{ env.FILE_TO_UPDATE }} | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
-        echo "CURRENT_YTU_TAG=$CURRENT_YTU_TAG" >> $GITHUB_OUTPUT
-        echo "Current hash in our repo: $CURRENT_YTU_TAG"
-
-    - name: Check for Streamlink update
-      id: check_streamlink
-      if: ${{ steps.get_latest_hash.outputs.LATEST_HASH != steps.read_current_hash.outputs.CURRENT_HASH }}
-      run: |
-        echo "::notice::Hash has changed. Proceeding with update."
-        echo "update_needed=true" >> $GITHUB_OUTPUT
-
-    - name: Check for Youtubeuploder update
-      id: check_ytu
-      if: ${{ steps.get_ytu_latest_tag.outputs.LATEST_TAG != steps.read_current_ytu_tag.outputs.CURRENT_YTU_TAG }}
-      run: |
-        echo "::notice::Youtubeuploder tag has changed. Proceeding with update."
-        echo "update_needed=true" >> $GITHUB_OUTPUT
-        
-    - name: Update file with new streamlink hash
-      if: ${{ steps.check_streamlink.outputs.update_needed == 'true' }}
-      run: |
-        NEW_HASH="${{ steps.get_latest_hash.outputs.LATEST_HASH }}"
-        sed -i "s/^ENV streamlinkCommit=.*/ENV streamlinkCommit=$NEW_HASH/" ${{ env.FILE_TO_UPDATE }}
-
-    - name: Update file with new Youtubeuploder tag
-      if: ${{ steps.check_ytu.outputs.update_needed == 'true' }}
-      run: |
-        NEW_TAG="${{ steps.get_ytu_latest_tag.outputs.LATEST_TAG }}"
-        sed -i "s/^ARG YTU_RELEASE=.*/ARG YTU_RELEASE=$NEW_TAG/" ${{ env.FILE_TO_UPDATE }}
-
-    - name: Commit changes and push to our repo
-      if: ${{ steps.check_streamlink.outputs.update_needed == 'true' || steps.check_ytu.outputs.update_needed == 'true' }} 
-      run: |
-        message="Automated:"
-        if [ "${{ steps.check_streamlink.outputs.update_needed }}" == 'true' ]; then
-          message="${message} Update Streamlink commit hash to ${{ steps.get_latest_hash.outputs.LATEST_HASH }}"
-        fi
-        if [ "${{ steps.check_ytu.outputs.update_needed }}" == 'true' ]; then
-          message="${message} Update Youtubeuploader tag to ${{ steps.get_ytu_latest_tag.outputs.LATEST_TAG }}"
-        fi
-        git config user.name "GitHub Actions Bot"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git add ${{ env.FILE_TO_UPDATE }}
-        git commit -m "${message}"
-        git push

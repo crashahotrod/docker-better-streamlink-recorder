@@ -1,2 +1,8 @@
 __pycache__/
 test-artifacts/
+.env
+.env.*
+!.env.example
+/docker-compose.yml
+youtubeuploader_client_secrets.json
+youtubeuploader_request.token

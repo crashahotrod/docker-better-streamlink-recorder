@@ -53,7 +53,7 @@ class MediaNormalizationTests(unittest.TestCase):
             shutil.copytree(self.fixtures, target / 'fixtures', dirs_exist_ok=True)
 
     def generate(self, name, audio=True, vfr=False, fragmented=False, audio_offset=0,
-                 audio_rate=44100, channels=1):
+                 audio_rate=44100, channels=1, audio_first=False):
         path = self.job / name
         command = ['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
                    'testsrc2=size=160x90:rate=10:duration=2']
@@ -62,6 +62,8 @@ class MediaNormalizationTests(unittest.TestCase):
                         'sine=frequency=800:duration=2', '-c:a', 'aac', '-ar', str(audio_rate), '-ac', str(channels)]
         if vfr:
             command += ['-vf', r"select=not(eq(mod(n\,3)\,1))", '-fps_mode', 'vfr']
+        if audio_first:
+            command += ['-map', '1:a', '-map', '0:v']
         command += ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-bf', '2', '-g', '10']
         if fragmented:
             command += ['-movflags', 'empty_moov+frag_keyframe+default_base_moof']
@@ -241,6 +243,20 @@ class MediaNormalizationTests(unittest.TestCase):
         self.assert_quarantined(self.cli('check'))
         self.assertEqual(self.original, media.digest(self.job / 'capture.bin'))
 
+    def test_missing_manifest_part_cannot_certify_complete_capture(self):
+        self.capture('duplicate-changed-codec.mp4')
+        manifest = self.normalize()
+        manifest['parts'].pop()
+        (self.job / 'normalized.json').write_text(json.dumps(manifest))
+        self.assert_quarantined(self.cli('check'))
+
+    def test_duplicate_manifest_identity_is_quarantined(self):
+        self.capture('duplicate-changed-codec.mp4')
+        manifest = self.normalize()
+        manifest['parts'][1]['id'] = manifest['parts'][0]['id']
+        (self.job / 'normalized.json').write_text(json.dumps(manifest))
+        self.assert_quarantined(self.cli('check'))
+
     def test_missing_part_is_retryable_without_deleting_capture(self):
         self.capture('control-single-init.mp4')
         self.normalize()
@@ -338,6 +354,18 @@ class MediaNormalizationTests(unittest.TestCase):
         actual = manifest['parts'][0]['validation']['start_times']
         self.assertGreater(expected[1] - expected[0], 0.2)
         self.assertAlmostEqual(expected[1] - expected[0], actual[1] - actual[0], delta=0.025)
+
+    def test_audio_first_input_keeps_complete_video_and_audio(self):
+        source = self.generate('audio-first.mp4', audio_first=True)
+        shutil.copyfile(source, self.job / 'capture.bin')
+        self.original = media.digest(source)
+        manifest = self.normalize()
+        expected = manifest['periods'][0]['validation']
+        actual = manifest['parts'][0]['validation']
+        self.assertEqual(['audio', 'video'], expected['stream_types'])
+        self.assertEqual(['video', 'audio'], actual['stream_types'])
+        self.assertEqual(expected['frame_hashes'][1], actual['frame_hashes'][0])
+        self.assertEqual(20, actual['frames'][0])
 
     def test_audio_configuration_changes_produce_separate_parts(self):
         first = self.generate('mono.mp4')

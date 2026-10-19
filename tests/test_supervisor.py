@@ -1,15 +1,19 @@
 """Validate actual Supervisor configuration without launching processes."""
 import os
 import pathlib
-import pwd
+try:
+    import pwd
+    from supervisor.options import ServerOptions
+except ImportError:
+    pwd = None
+    ServerOptions = None
 import unittest
 from unittest.mock import patch
-
-from supervisor.options import ServerOptions
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+@unittest.skipIf(ServerOptions is None or pwd is None, 'Supervisor configuration tests require supervisor and pwd')
 class SupervisorTests(unittest.TestCase):
     def test_worker_flags_and_process_group_shutdown(self):
         # Repeated enabled-to-disabled transitions catch stale defaults.

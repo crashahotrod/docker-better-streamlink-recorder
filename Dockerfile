@@ -1,30 +1,46 @@
-FROM python:3.12.2
+FROM --platform=$BUILDPLATFORM golang:1.27.2-bookworm AS uploader
+ARG YTU_RELEASE=v1.25.5
+WORKDIR /src
+RUN git clone --depth 1 --branch "${YTU_RELEASE}" https://github.com/porjo/youtubeuploader.git .
+COPY build/uploader-modules.txt /tmp/uploader-modules.txt
+# Keep upstream application code while replacing vulnerable transitive libraries.
+RUN xargs go get < /tmp/uploader-modules.txt && go mod tidy && go mod verify && go test ./...
+ARG TARGETARCH
+ARG TARGETVARIANT
+RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOARM="${TARGETVARIANT#v}" \
+    go build -trimpath -ldflags="-s -w -X main.appVersion=${YTU_RELEASE#v}" \
+    -o /out/youtubeuploader ./cmd/youtubeuploader
+RUN mkdir -p /out/licenses && cp /usr/local/go/LICENSE /out/licenses/Go-LICENSE && \
+    cp go.mod go.sum /tmp/uploader-modules.txt /out/licenses/ && \
+    git rev-parse HEAD > /out/licenses/source-commit && \
+    printf '%s\n' 'youtubeuploader dependencies were updated using uploader-modules.txt; see go.mod and go.sum.' > /out/licenses/CHANGES && \
+    go list -deps -f '{{with .Module}}{{.Path}} {{.Dir}}{{end}}' ./cmd/youtubeuploader | sort -u | \
+    while read -r module directory; do \
+        test -n "$directory" || continue; \
+        mkdir -p "/out/licenses/$module"; \
+        find "$directory" -maxdepth 1 -type f \
+            \( -iname 'license*' -o -iname 'notice*' -o -iname 'copying*' \) \
+            -exec cp '{}' "/out/licenses/$module/" \;; \
+    done
+
+FROM python:3.12-bookworm AS streamlink
+ENV streamlinkCommit=b19cc05aff877e95b4aee2000401566a3ea4d5b5
+RUN pip3 install --prefix=/install git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
+RUN sed -i '/arguments.extend(\[/a \                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",' /install/lib/python3.12/site-packages/streamlink/webbrowser/chromium.py
+
+FROM python:3.12-slim-bookworm AS runtime
 LABEL org.opencontainers.image.authors="crashahotrod@gmail.com"
+LABEL org.opencontainers.image.licenses="MIT"
 ARG USER_NAME=apps
 ARG USER_ID=568
 ARG GROUP_ID=568
 ENV USER_NAME=${USER_NAME}
 RUN groupadd -g ${GROUP_ID} ${USER_NAME} && useradd -u ${USER_ID} -g ${USER_NAME} -m -s /bin/bash ${USER_NAME}
-ARG YTU_RELEASE=v1.25.5
-ARG YTU_SHORT="${YTU_RELEASE#v}"
-ARG TARGETARCH
-ARG TARGETVARIANT
-# Download the youtubeuploader release matching the target architecture (amd64, arm64, armv7, armv6)
-RUN case "${TARGETARCH}" in \
-        "amd64") ARCH="amd64" ;; \
-        "arm64"|"aarch64") ARCH="arm64" ;; \
-        "arm") \
-            ARCH="arm${TARGETVARIANT}" ;; \
-        *) echo "Unsupported architecture: ${TARGETARCH}"; exit 1 ;; \
-    esac && \
-    BINARY_DOWNLOAD_URL="https://github.com/porjo/youtubeuploader/releases/download/${YTU_RELEASE}/youtubeuploader_${YTU_SHORT}_Linux_${ARCH}.tar.gz" && \
-    curl -L -o youtubeuploader.tar.gz "${BINARY_DOWNLOAD_URL}" && \
-    tar -xzf youtubeuploader.tar.gz -C /etc youtubeuploader && rm -f youtubeuploader.tar.gz
-RUN apt-get update && apt-get install -y supervisor python3-pip jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini util-linux && rm -rf /var/lib/apt/lists/*
-ENV streamlinkCommit=b19cc05aff877e95b4aee2000401566a3ea4d5b5
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates supervisor jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini util-linux && rm -rf /var/lib/apt/lists/*
+COPY --from=uploader /out/youtubeuploader /etc/youtubeuploader
+COPY --from=uploader /out/licenses /usr/share/doc/youtubeuploader
+COPY --from=streamlink /install /usr/local
 ENV CHROME_BIN=/usr/bin/chromium CHROME_PATH=/usr/lib/chromium/
-RUN pip3 install --upgrade git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
-RUN sed -i '/arguments.extend(\[/a \                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",' /usr/local/lib/python3.12/site-packages/streamlink/webbrowser/chromium.py
 RUN dbus-uuidgen > /etc/machine-id
 RUN mkdir -p /var/log/streamlink
 RUN mkdir -p /config
@@ -40,7 +56,17 @@ COPY ./upload.sh /etc/streamlink/tools/
 COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY pipeline.sh media.py /usr/local/bin/
+COPY LICENSE /usr/share/doc/streamlink-recorder/LICENSE
 RUN chmod +x /etc/streamlink/tools/*.sh /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--","entrypoint.sh"]
 CMD ["supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+
+# BuildKit can execute this offline check under its bundled architecture emulator.
+# The default release target below inherits runtime without shipping test fixtures.
+FROM runtime AS platform-test
+COPY tests/test_platform.sh tests/generate_media_fixtures.py /etc/streamlink/tools/tests/
+RUN --network=none MODE=twitch CHANNEL=platform CLIENT_ID=example CLIENT_SECRET=example \
+    entrypoint.sh bash /etc/streamlink/tools/tests/test_platform.sh
+
+FROM runtime AS release

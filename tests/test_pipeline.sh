@@ -191,6 +191,15 @@ unset FAIL_STAGE
 publish_recording "$JOB"
 [[ ! -d "$JOB" ]]
 
+# Damaged bookkeeping cannot publish one part and then discard another period.
+new_job duplicate-changed-codec.mp4 publish
+original=$(file_hash "$JOB/capture.bin")
+jq '.parts |= .[:-1]' "$JOB/normalized.json" > "$JOB/manifest.tmp"
+mv -- "$JOB/manifest.tmp" "$JOB/normalized.json"
+if publish_recording "$JOB"; then echo 'Incomplete manifest published' >&2; exit 1; fi
+JOB="$WORK_DIR/quarantine/${JOB##*/}"
+[[ $(file_hash "$JOB/capture.bin") == "$original" && -s "$JOB/parts/0002.mp4" ]]
+
 # Changed final bytes invalidate the saved receipt and prevent source cleanup.
 new_job duplicate-changed-codec.mp4 publish
 publish_part "$JOB" 0001 "$(part_file "$JOB" 0001)"

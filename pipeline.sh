@@ -119,6 +119,7 @@ job_media() {
 remove_completed_job() {
     local job="$1" retired id extension
     [[ "$job" == "$WORK_DIR/"* && "$job" != "$WORK_DIR/" && -f "$job/normalized.json" ]] || return 1
+    media_command check "$job" || return 1
     while IFS= read -r id; do
         read -r extension < "$job/parts/$id.published.extension" || return 1
         part_committed "$job" "$id" "$extension" || return 1

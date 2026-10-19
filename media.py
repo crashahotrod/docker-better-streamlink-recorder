@@ -347,7 +347,20 @@ def public(report):
 
 def compare(expected, actual, lossless=True, packet_copy=False):
     if expected['stream_types'] != actual['stream_types']:
-        raise UnsafeMedia('Track layout changed')
+        if sorted(expected['stream_types']) != sorted(actual['stream_types']):
+            raise UnsafeMedia('Track layout changed')
+        # FFmpeg maps video before audio. Compare corresponding tracks while
+        # preserving the report's actual order and the order within each type.
+        available = {kind: iter([i for i, value in enumerate(actual['stream_types'])
+                                if value == kind])
+                     for kind in set(actual['stream_types'])}
+        order = [next(available[kind]) for kind in expected['stream_types']]
+        actual = actual.copy()
+        for key in ('signature', 'packets', 'stream_types', 'track_ids', 'start_times',
+                    'packet_hashes', 'packet_timing_hashes', 'frames', 'samples',
+                    'frame_hashes', 'timing_hashes', 'decoded_start', 'decoded_duration'):
+            if key in actual:
+                actual[key] = [actual[key][i] for i in order]
     if expected['packets'] != actual['packets'] and lossless:
         raise UnsafeMedia('Packet/sample counts changed')
     if packet_copy:
@@ -499,7 +512,59 @@ def normalize(job):
 
 def load_part(job, part):
     manifest = json.loads((job / 'normalized.json').read_text())
+    validate_manifest(manifest)
     return next(item for item in manifest['parts'] if item['id'] == part)
+
+
+def validate_manifest(manifest):
+    """Reject damaged bookkeeping before it can acknowledge an incomplete job."""
+    try:
+        if manifest['version'] != 1:
+            raise ValueError('Unsupported manifest version')
+        capture = manifest['capture']
+        if capture['file'] not in ('capture.bin', 'media.ts', 'media.mp4'):
+            raise ValueError('Invalid recovery input path')
+        if type(capture['size']) is not int or capture['size'] <= 0:
+            raise ValueError('Invalid capture size')
+        periods, parts = manifest['periods'], manifest['parts']
+        if not 1 <= len(parts) <= len(periods) <= 4096:
+            raise ValueError('Missing or excessive periods/parts')
+        position = 0
+        for number, period in enumerate(periods, 1):
+            if (period['number'] != number or period['start'] != position or
+                    type(period['end']) is not int or period['end'] <= position):
+                raise ValueError('Source period coverage is incomplete or unordered')
+            position = period['end']
+        if position != capture['size']:
+            raise ValueError('Source periods do not cover the complete capture')
+        for number, part in enumerate(parts, 1):
+            identity = f'{number:04d}'
+            if (part['id'] != identity or part['extension'] not in ('mp4', 'ts') or
+                    part['file'] != f'parts/{identity}.{part["extension"]}'):
+                raise ValueError('Invalid, duplicated or unordered part identity')
+        for item in [capture, *parts]:
+            if not isinstance(item['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', item['sha256']):
+                raise ValueError('Invalid media checksum')
+
+        def totals(items):
+            result = {'video': 0, 'audio': 0}
+            for item in items:
+                report = item['validation']
+                types, frames, packets = report['stream_types'], report['frames'], report['packets']
+                if ('video' not in types or len(types) != len(frames) or len(types) != len(packets) or
+                        any(kind not in AV_TYPES for kind in types) or
+                        any(type(n) is not int or n <= 0 for n in [*frames, *packets])):
+                    raise ValueError('Invalid stream/sample accounting')
+                for kind, count, packet_count in zip(types, frames, packets):
+                    if kind == 'video' and count != packet_count:
+                        raise ValueError('Incomplete video decoding in manifest')
+                    result[kind] += packet_count
+            return result
+
+        if totals(periods) != totals(parts):
+            raise ValueError('Output parts do not account for every source sample')
+    except (KeyError, TypeError, ValueError) as error:
+        raise UnsafeMedia(f'Invalid manifest: {error}') from error
 
 
 def main():
@@ -522,10 +587,9 @@ def main():
             normalize(args.job)
         elif args.command == 'check':
             manifest = json.loads((args.job / 'normalized.json').read_text())
-            if manifest.get('version') != 1 or not manifest.get('parts'):
-                raise UnsafeMedia('Missing or unsupported part manifest')
-            if pathlib.Path(manifest['capture']['file']).name != manifest['capture']['file']:
-                raise UnsafeMedia('Invalid recovery input path')
+            validate_manifest(manifest)
+            if (args.job / manifest['capture']['file']).stat().st_size != manifest['capture']['size']:
+                raise UnsafeMedia('Recovery input size changed')
             if digest(args.job / manifest['capture']['file']) != manifest['capture']['sha256']:
                 raise UnsafeMedia('Recovery input checksum changed')
             for part in manifest['parts']:

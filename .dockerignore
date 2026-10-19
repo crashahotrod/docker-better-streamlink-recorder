@@ -1,0 +1,21 @@
+# Send runtime sources, security pins and two test helpers; exclude secrets/volumes.
+**
+!Dockerfile
+!LICENSE
+!download.sh
+!pipeline.sh
+!publish.sh
+!normalize.sh
+!recover.sh
+!media.py
+!encode.sh
+!upload.sh
+!entrypoint.sh
+!supervisord.conf
+!build/
+build/**
+!build/uploader-modules.txt
+!tests/
+tests/**
+!tests/test_platform.sh
+!tests/generate_media_fixtures.py

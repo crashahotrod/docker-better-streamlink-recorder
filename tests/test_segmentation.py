@@ -79,6 +79,15 @@ if os.environ.get('FAIL_SOURCE'): sys.exit(1)
         self.env['FFMPEG_CALLS'] = str(self.directory / 'ffmpeg-calls')
         self.env['FIXTURE'] = str(self.fixtures / 'source.ts')
 
+    def tearDown(self):
+        result = self._outcome.result
+        failed = any(test is self for test, _ in result.failures + result.errors)
+        if failed and self.log.exists():
+            print(self.log.read_text(errors='replace')[-4000:])
+        if failed and os.getenv('TEST_ARTIFACT_DIR'):
+            target = pathlib.Path(os.environ['TEST_ARTIFACT_DIR']) / self._testMethodName
+            shutil.copytree(self.directory, target, dirs_exist_ok=True)
+
     def start(self, **environment):
         self.env.update(environment)
         output = self.log.open('wb')
@@ -217,21 +226,30 @@ run_queue_once publish publish_recording
         (self.bin / 'streamlink').write_text('#!/usr/bin/env python3\nimport os, sys\n'
             f'sys.argv[-2] = "hls://http://127.0.0.1:{server.server_port}/live.m3u8"\n'
             f'os.execv({real!r}, [{real!r}, *sys.argv[1:]])\n')
-        process = self.start(REMUX='true', STREAMLINK_EXTRA_ARGS='--hls-live-restart --hls-live-edge 99 --hls-playlist-reload-attempts 20')
+        # This fixture intentionally pauses playlist updates during publication.
+        # Reload attempts cover HTTP failures, not Streamlink's implicit EOF deadline.
+        # Keep the read timeout above the 30s queue wait plus the 90s publish timeout.
+        process = self.start(REMUX='true', STREAMLINK_EXTRA_ARGS=(
+            '--hls-live-restart --hls-live-edge 99 --stream-segmented-queue-deadline 0 '
+            '--stream-timeout 180'))
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not list((self.work / 'normalize').glob('recording.*')):
             if process.poll() is not None:
                 self.fail(self.log.read_text())
             time.sleep(0.1)
         self.assertTrue(list((self.work / 'normalize').glob('recording.*')), self.log.read_text())
+        self.assertIsNone(process.poll(), self.log.read_text())
         self.publish()
         self.assertTrue(list(pathlib.Path(self.env['STORAGE_DIR']).rglob('*part-0001.mp4')))
-        self.assertIsNone(process.poll())
+        self.assertIsNone(process.poll(), self.log.read_text())
         temporary = playlist.with_suffix('.tmp')
         temporary.write_text(full)
         temporary.replace(playlist)
         self.wait(process)
         self.publish()
+        outputs = list(pathlib.Path(self.env['STORAGE_DIR']).rglob('*.mp4'))
+        self.assertEqual(120, sum(media.Tools(self.directory / 'checks').inspect(file, file.parent)['frames'][0]
+                                  for file in outputs))
         segmentation.audit_sessions(self.work)
         self.assertFalse(list((self.work / 'sessions').glob('recording.*')))
 

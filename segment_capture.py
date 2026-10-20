@@ -2,6 +2,7 @@
 """Disk-backed, downstream stream-copy segmentation of continuous Streamlink output."""
 import argparse
 import csv
+import fcntl
 import hashlib
 import json
 import math
@@ -67,11 +68,12 @@ def stop_process(process):
 
 class Source:
     """Drain stdout to disk independently of FFmpeg; readers can tail the saved bytes."""
-    def __init__(self, path, command, guard):
+    def __init__(self, path, command, guard, pass_fds=()):
         self.path, self.guard = path, guard
         self.condition = threading.Condition()
         self.size, self.done, self.error = 0, False, None
-        self.process = subprocess.Popen(command, stdout=subprocess.PIPE, start_new_session=True)
+        self.process = subprocess.Popen(command, stdout=subprocess.PIPE, start_new_session=True,
+                                        pass_fds=pass_fds)
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -123,6 +125,12 @@ class Capture:
         self.session.parent.mkdir(exist_ok=True)
         if self.session.exists():
             raise CaptureError('Session identity collision; existing data retained')
+        self.writer_lock = open(self.work / f'capture-{job.name}.lock', 'a')
+        try:
+            fcntl.flock(self.writer_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            self.writer_lock.close()
+            raise CaptureError('Session still has a capture writer') from error
         job.rename(self.session)
         self.output = self.session / 'outputs'
         self.output.mkdir()
@@ -138,8 +146,7 @@ class Capture:
         self.collect_lock = threading.RLock()
         self.child(1)
         state(self.work / 'active.job', self.child_path(1))
-        atomic_json(self.session / 'session.json', {'version': 1, 'parent': self.parent,
-                    'status': 'recording', 'segments': [], 'source_periods': []})
+        self.save('recording')
 
     def child_path(self, index):
         return self.work / 'active' / f'recording.{self.parent}.seg{index}'
@@ -190,7 +197,8 @@ class Capture:
         command += [f'segment-%d.{extension}']
         with stderr.open('wb') as log:
             process = subprocess.Popen(command, cwd=self.output, stdin=subprocess.PIPE,
-                                       stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
+                                       stdout=subprocess.DEVNULL, stderr=log, start_new_session=True,
+                                       pass_fds=(self.writer_lock.fileno(),))
         epoch = {'process': process, 'list': listing, 'stderr': stderr, 'start': start,
                  'extension': extension, 'finished': False, 'allow_final': False,
                  'offset': offset, 'end': None, 'number': number}
@@ -329,9 +337,10 @@ class Capture:
 
     def save(self, status):
         atomic_json(self.session / 'session.json', {'version': 1, 'parent': self.parent,
-                    'status': status, 'segments': sorted(self.sealed), 'source_periods': self.source_periods})
+                    'status': status, 'segments': sorted(self.sealed), 'source_periods': self.source_periods,
+                    'segment_seconds': self.target})
 
-    def run(self):
+    def run(self, source=None):
         consumer = None
         original_handlers = {}
 
@@ -343,7 +352,8 @@ class Capture:
             for sig in (signal.SIGTERM, signal.SIGINT):
                 original_handlers[sig] = signal.signal(sig, interrupted)
             self.guard()
-            self.source = Source(self.session / 'capture.bin', self.command, self.guard)
+            self.source = source or Source(self.session / 'capture.bin', self.command, self.guard,
+                                           pass_fds=(self.writer_lock.fileno(),))
             consumer = threading.Thread(target=self.feed, daemon=True)
             consumer.start()
             while consumer.is_alive():
@@ -368,7 +378,7 @@ class Capture:
         except (OSError, CaptureError) as error:
             self.ending = True
             self.save('interrupted')
-            print(f'[Capture] {error}; retained source: {self.session}', file=sys.stderr)
+            print(f'[Capture] {error}: {self.session}', file=sys.stderr)
             if isinstance(error, LowSpace):
                 self.low_disk_alert()
             return 1
@@ -376,7 +386,8 @@ class Capture:
             self.ending = True
             if self.source:
                 stop_process(self.source.process)
-                self.source.thread.join(timeout=6)
+                if self.source.thread:
+                    self.source.thread.join(timeout=6)
             for epoch in self.epochs:
                 stop_process(epoch['process'])
             if consumer:
@@ -386,6 +397,33 @@ class Capture:
             (self.work / 'active.job').unlink(missing_ok=True)
             for sig, handler in original_handlers.items():
                 signal.signal(sig, handler)
+            try:
+                if not self.success:
+                    self.discard_empty_session(consumer)
+            finally:
+                # Children inherit this descriptor, so a killed controller cannot unlock live writers.
+                self.writer_lock.close()
+
+    def discard_empty_session(self, consumer):
+        # Check actual files too: a short write can leave bytes before Source.size advances.
+        if self.sealed or (self.source and self.source.size) or (consumer and consumer.is_alive()):
+            return
+        if self.source and self.source.thread and self.source.thread.is_alive():
+            return
+        source = self.session / 'capture.bin'
+        if source.exists() and source.stat().st_size:
+            return
+        children = list((self.work / 'active').glob(f'recording.{self.parent}.seg*'))
+        for job in children:
+            capture = job / 'capture.bin'
+            if (job / 'completed').exists() or (capture.exists() and capture.stat().st_size):
+                return
+        for job in children:
+            shutil.rmtree(job)
+        shutil.rmtree(self.session)
+        # Unlink only after writers stopped, while this controller still owns the lock.
+        pathlib.Path(self.writer_lock.name).unlink(missing_ok=True)
+        print(f'[Capture] Removed empty aborted session: {self.session}', flush=True)
 
     def low_disk_alert(self):
         if os.environ.get('DISCORD_NOTIFY_ON_ERROR', 'true') == 'false':
@@ -394,7 +432,7 @@ class Capture:
             return
         try:
             enqueue(self.work, 'monitor', {'embeds': [{'title': 'Low Disk Space: capture stopped safely',
-                'description': 'Scratch processing reserve reached. Closed segments remain queued; original capture and unfinished tail are retained.',
+                'description': 'Scratch processing reserve reached. Closed segments remain queued; any captured bytes are retained.',
                 'color': 15105570}]})
         except OSError:
             print('[Capture] Unable to queue disk-space alert.', file=sys.stderr)
@@ -418,11 +456,19 @@ def published_receipt(job):
 
 
 def published_receipt_locked(job, session, index):
+    atomic_json(session / f'seg{index}.published.json', receipt_data(job))
+
+
+def receipt_data(job):
     manifest = json.loads((job / 'normalized.json').read_text())
+    epoch = int((job / 'segment-epoch').read_text())
+    return report_receipt([part['validation'] for part in manifest['parts']], epoch)
+
+
+def report_receipt(reports, epoch):
     totals = {'video': 0, 'audio': 0}
     video = []
-    for part in manifest['parts']:
-        report = part['validation']
+    for report in reports:
         track = 0
         for stream, (kind, count) in enumerate(zip(report['stream_types'], report['packets'])):
             totals[kind] += count
@@ -431,8 +477,7 @@ def published_receipt_locked(job, session, index):
                     video.append([])
                 video[track].append({'frames': report['frames'][stream], 'sha256': report['frame_hashes'][stream]})
                 track += 1
-    epoch = int((job / 'segment-epoch').read_text())
-    atomic_json(session / f'seg{index}.published.json', {'packets': totals, 'video': video, 'epoch': epoch})
+    return {'packets': totals, 'video': video, 'epoch': epoch}
 
 
 def verify_source_frames(report, receipts):
@@ -489,6 +534,39 @@ def audit_sessions_locked(work):
                 audit_session(work, session)
 
 
+def verify_session_source(work, session, periods, receipts):
+    """Validate full source coverage before retirement or recovery handoff."""
+    source = session / 'capture.bin'
+    position = 0
+    for period in periods:
+        if period['start'] != position or period['end'] <= position:
+            raise CaptureError('Incomplete source epoch accounting')
+        position = period['end']
+    if position != source.stat().st_size:
+        raise CaptureError('Source epochs do not cover the entire original capture')
+    expected = {kind: sum(receipt['packets'][kind] for receipt in receipts) for kind in ('video', 'audio')}
+    original = {'video': 0, 'audio': 0}
+    for number, period in enumerate(periods, 1):
+        whole = period['start'] == 0 and period['end'] == source.stat().st_size
+        candidate = source if whole else session / 'audit-input.bin'
+        if not whole:
+            candidate.unlink(missing_ok=True)
+        require_space(work, 0 if whole else period['end'] - period['start'])
+        if not whole:
+            media.copy_range(source, candidate, period['start'], period['end'])
+        tools = media.Tools(session / 'audit' / str(number))
+        report = tools.inspect(candidate, session)
+        verify_source_frames(report, [receipt for receipt in receipts if receipt['epoch'] == number])
+        for kind, count in zip(report['stream_types'], report['packets']):
+            original[kind] += count
+        if not whole:
+            candidate.unlink()
+        for output in tools.directory.glob('*.stdout'):
+            output.unlink()
+    if original != expected:
+        raise CaptureError(f'Source and published packet counts differ: source={original}, published={expected}')
+
+
 def audit_session(work, session):
     manifest_file = session / 'session.json'
     try:
@@ -497,14 +575,6 @@ def audit_session(work, session):
             return
         if not manifest['segments'] or manifest['segments'] != list(range(1, len(manifest['segments']) + 1)):
             raise CaptureError('Incomplete segment index accounting')
-        position = 0
-        for period in manifest['source_periods']:
-            if period['start'] != position or period['end'] <= position:
-                raise CaptureError('Incomplete source epoch accounting')
-            position = period['end']
-        if position != (session / 'capture.bin').stat().st_size:
-            raise CaptureError('Source epochs do not cover the entire original capture')
-        expected = {'video': 0, 'audio': 0}
         receipts = []
         for index in manifest['segments']:
             receipt = session / f'seg{index}.published.json'
@@ -512,32 +582,8 @@ def audit_session(work, session):
                 break
             receipt = json.loads(receipt.read_text())
             receipts.append(receipt)
-            counts = receipt['packets']
-            for kind in expected:
-                expected[kind] += counts[kind]
         else:
-            original = {'video': 0, 'audio': 0}
-            source = session / 'capture.bin'
-            for number, period in enumerate(manifest['source_periods'], 1):
-                whole = period['start'] == 0 and period['end'] == source.stat().st_size
-                candidate = source if whole else session / 'audit-input.bin'
-                if not whole:
-                    candidate.unlink(missing_ok=True)
-                require_space(work, 0 if whole else period['end'] - period['start'])
-                if not whole:
-                    media.copy_range(source, candidate, period['start'], period['end'])
-                tools = media.Tools(session / 'audit' / str(number))
-                report = tools.inspect(candidate, session)
-                verify_source_frames(report, [receipt for receipt in receipts if receipt['epoch'] == number])
-                for kind, count in zip(report['stream_types'], report['packets']):
-                    original[kind] += count
-                if not whole:
-                    candidate.unlink()
-                for output in tools.directory.glob('*.stdout'):
-                    output.unlink()
-            if original != expected:
-                manifest.update(source_packets=original, published_packets=expected)
-                raise CaptureError('Source and published packet counts differ')
+            verify_session_source(work, session, manifest['source_periods'], receipts)
             # Raw input is retained through the broadcast and until all child publications are verified.
             retired = session.with_name('.completed.' + session.name)
             session.rename(retired)

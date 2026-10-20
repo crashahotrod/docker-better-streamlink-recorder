@@ -10,6 +10,7 @@ export CONFIG_DIR="$TEST_ROOT/config"
 unset UPLOAD ENCODE REMUX YOUTUBE_SPLITTING TWITCH_USER_TOKEN
 validate_environment
 [[ "$UPLOAD" == false && "$ENCODE" == false ]]
+[[ "$QUARANTINE_RETENTION_DAYS" == 7 ]]
 validate_upload_credentials
 for UPLOAD in false true; do
     for ENCODE in false true; do
@@ -44,6 +45,19 @@ for val in 0 18 23 51; do (ENCODE_CRF="$val"; validate_environment); done
 for val in -1 52 abc; do
     if (ENCODE_CRF="$val"; validate_environment 2>/dev/null); then echo "Invalid ENCODE_CRF $val accepted" >&2; exit 1; fi
 done
+for accel in auto cpu nvenc vaapi qsv; do (ENCODE_ACCEL="$accel"; unset ENCODE_PRESET ENCODE_VIDEO_CODEC; validate_environment); done
+if (ENCODE_ACCEL=unknown; validate_environment 2>/dev/null); then echo 'Invalid accelerator accepted' >&2; exit 1; fi
+if (ENCODE_ACCEL=nvenc; ENCODE_VIDEO_CODEC=libx264; validate_environment 2>/dev/null); then echo 'Encoder mismatch accepted' >&2; exit 1; fi
+if (ENCODE_ACCEL=vaapi; ENCODE_PRESET=medium; validate_environment 2>/dev/null); then echo 'VAAPI preset accepted' >&2; exit 1; fi
+for val in 0 1 23 51; do (ENCODE_QUALITY="$val"; validate_environment); done
+for val in -1 52 abc 1.5; do
+    if (ENCODE_QUALITY="$val"; validate_environment 2>/dev/null); then echo "Invalid quality $val accepted" >&2; exit 1; fi
+done
+if (ENCODE_ACCEL=qsv; ENCODE_QUALITY=0; validate_environment 2>/dev/null); then echo 'QSV zero quality accepted' >&2; exit 1; fi
+if (ENCODE=true; ENCODE_ACCEL=vaapi; ENCODE_DEVICE="$TEST_ROOT/missing-render-node"; prepare_encoding_device 2>/dev/null); then
+    echo 'Missing render device accepted' >&2; exit 1
+fi
+(ENCODE=true; ENCODE_ACCEL=cpu; ENCODE_DEVICE="$TEST_ROOT/missing-render-node"; prepare_encoding_device)
 for val in 0 5 100; do (MIN_FREE_SPACE_GB="$val"; validate_environment); done
 for val in -1 abc; do
     if (MIN_FREE_SPACE_GB="$val"; validate_environment 2>/dev/null); then echo "Invalid MIN_FREE_SPACE_GB $val accepted" >&2; exit 1; fi
@@ -51,6 +65,10 @@ done
 for val in 0 7 30; do (RETENTION_DAYS="$val"; validate_environment); done
 for val in -1 abc; do
     if (RETENTION_DAYS="$val"; validate_environment 2>/dev/null); then echo "Invalid RETENTION_DAYS $val accepted" >&2; exit 1; fi
+done
+for val in 0 7 30; do (QUARANTINE_RETENTION_DAYS="$val"; validate_environment); done
+for val in -1 abc 1.5; do
+    if (QUARANTINE_RETENTION_DAYS="$val"; validate_environment 2>/dev/null); then echo "Invalid QUARANTINE_RETENTION_DAYS $val accepted" >&2; exit 1; fi
 done
 for val in 150 180 600; do (RECORDER_STALE_SECONDS="$val"; validate_environment); done
 for val in 1 21600 42900; do (YOUTUBE_SEGMENT_SECONDS="$val"; validate_environment); done

@@ -12,6 +12,7 @@
 !operations.py
 !healthcheck.py
 !segment_capture.py
+!session_recovery.py
 !encode.sh
 !upload.sh
 !status.sh

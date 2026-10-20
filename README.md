@@ -28,15 +28,18 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `CLIENT_ID` | Required | Application client ID for the selected service's live-status API. |
 | `CLIENT_SECRET` | Required | Corresponding application client secret. |
 | `STREAM_QUALITY` | `best` | Stream quality string passed to Streamlink (e.g. `1080p60,720p60,best`). |
-| `STREAMLINK_EXTRA_ARGS` | Unset | Extra arguments passed to Streamlink (e.g. `--twitch-disable-ads`). |
-| `AUTO_RECOVER_INTERRUPTED` | `false` | Automatically recover interrupted captures in the original, unsplit recording mode. Unsealed segmented tails require offline review. |
+| `STREAMLINK_EXTRA_ARGS` | Unset | Extra arguments passed to Streamlink, with shell-style quoting (e.g. `--twitch-low-latency`). See recipes below. |
+| `AUTO_RECOVER_INTERRUPTED` | `false` | Automatically recover orphaned unsplit captures and validate/recover stopped segmented sessions before the next live-status check. |
 | `REMUX` | `false` | After capture, stream-copy TS to MP4. MP4 input is normalized as MP4 regardless of this flag. |
 | `ENCODE` | `false` | Convert completed recordings to H.264/AAC MP4. |
-| `ENCODE_CRF` | `23` | FFmpeg Constant Rate Factor for encoding (0–51). |
-| `ENCODE_PRESET` | `medium` | FFmpeg encoding preset (`ultrafast` through `veryslow`). |
-| `ENCODE_VIDEO_CODEC` | `libx264` | FFmpeg video encoder codec. |
+| `ENCODE_ACCEL` | `auto` | `auto`, `cpu`, `nvenc`, `vaapi`, or `qsv`. Auto infers the backend from `ENCODE_VIDEO_CODEC`, using CPU by default. |
+| `ENCODE_CRF` | `23` | CRF for `libx264`/`libx265` CPU encoding (0–51); hardware encoders use `ENCODE_QUALITY`. |
+| `ENCODE_QUALITY` | `23` | Hardware quality: NVENC CQ / VAAPI QP (0–51), QSV ICQ (1–51). Scales differ between encoders; NVENC `0` selects automatic quality. |
+| `ENCODE_PRESET` | Backend-specific | `medium` for x264/x265/QSV, `p4` for NVENC. Leave unset for VAAPI, which has no preset option. |
+| `ENCODE_VIDEO_CODEC` | Backend-specific | Defaults to `libx264` on CPU or `h264_nvenc`, `h264_vaapi`, `h264_qsv` for the selected accelerator. An explicit codec must match `ENCODE_ACCEL` unless it is `auto`. |
+| `ENCODE_DEVICE` | `/dev/dri/renderD128` | Passed-through DRM render node used by VAAPI/QSV; unused for CPU/NVENC. |
 | `ENCODE_AUDIO_BITRATE` | `128k` | Audio bitrate for AAC encoding. |
-| `ENCODE_EXTRA_ARGS` | Unset | Extra arguments passed to FFmpeg during encoding. |
+| `ENCODE_EXTRA_ARGS` | Unset | Extra arguments passed to FFmpeg during encoding, with shell-style quoting. |
 | `UPLOAD` | `false` | Upload completed recordings to YouTube before optional encoding. |
 | `UPLOAD_BOT_NAME` | Required for uploads | Name included in the upload description. |
 | `YOUTUBE_PRIVACY` | `public` | Upload visibility: `public`, `private`, or `unlisted`. Use `private` for smoke tests. |
@@ -47,7 +50,8 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `YOUTUBE_CATEGORY_ID` | Unset | Optional YouTube numeric category ID (e.g. `20` for Gaming). |
 | `YOUTUBE_DESCRIPTION` | Unset | Custom description template (defaults to `Uploaded Automatically by <UPLOAD_BOT_NAME>`). |
 | `MIN_FREE_SPACE_GB` | `0` | Minimum free disk space in GB required on scratch/storage to start recording (`0` disables check). |
-| `RETENTION_DAYS` | `0` | Auto-prune recordings older than N days from storage (`0` disables pruning). |
+| `RETENTION_DAYS` | `0` | Prune expired MP4/TS/MKV recordings and their matching sidecars from storage (`0` disables pruning). |
+| `QUARANTINE_RETENTION_DAYS` | `7` | Permanently delete whole quarantined jobs N days after entering quarantine (`0` keeps them indefinitely). Runs every 30 seconds, independently of publication. Legacy jobs use their directory modification time. |
 | `POST_PUBLISH_COMMAND` | Unset | Custom shell command evaluated when a recording part is published. |
 | `DISCORD_WEBHOOK_URL` | Unset | Optional Discord webhook for rich embed go-live and upload-complete alerts. Notification failures do not stop recording. |
 | `DISCORD_MONITOR_WEBHOOK_URL` | Unset | Dedicated webhook for the persistent status message and operational alerts. Only operational alerts fall back to `DISCORD_WEBHOOK_URL`. |
@@ -55,7 +59,7 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `RECORDER_STALE_SECONDS` | `180` | Report an error after this many seconds without monitor progress or capture writes. Must be at least `150` to allow bounded API requests. |
 | `TWITCH_USER_TOKEN` | Unset | Optional user OAuth token for authenticated Twitch access, such as subscribed-channel ad handling. |
 
-Boolean values must be exactly `true` or `false`. Numeric values (`ENCODE_CRF`, `MIN_FREE_SPACE_GB`, `RETENTION_DAYS`)
+Boolean values must be exactly `true` or `false`. Numeric values (`ENCODE_CRF`, `MIN_FREE_SPACE_GB`, `RETENTION_DAYS`, `QUARANTINE_RETENTION_DAYS`)
 must be positive integers (or `0` to disable). Twitch recording does not
 require `TWITCH_USER_TOKEN`; anonymous operation omits its authorization header.
 See [Streamlink's Twitch authentication instructions](https://streamlink.github.io/cli/plugins/twitch.html#authentication)
@@ -67,8 +71,8 @@ When `POST_PUBLISH_COMMAND` is specified, the command is executed in a subshell 
 exported in its environment.
 
 When `DISCORD_WEBHOOK_URL` is set, rich embeds are sent on stream start and upon YouTube upload
-completion (including direct links to uploaded videos). If YouTube's daily API upload quota is
-exceeded, upload workers detect `quotaExceeded` and automatically back off until the next
+completion (including direct links to uploaded videos). If YouTube reports an API quota or daily video-count limit,
+upload workers detect `quotaExceeded` or `uploadLimitExceeded` and back off until the next
 midnight in `America/Los_Angeles`, including daylight saving changes. Uploaders using
 the same YouTube application client ID share a persistent cooldown and upload lock
 when they share the scratch volume, even if their channel or config paths differ.
@@ -78,6 +82,129 @@ Notifications are written atomically to a persistent outbox and delivered by a
 separate worker. Recording and upload workers never wait for Discord HTTP requests.
 Successful uploads save their per-part receipt before notification work begins.
 
+### Extra arguments and Streamlink options
+
+`STREAMLINK_EXTRA_ARGS` and `ENCODE_EXTRA_ARGS` use Python's `shlex.split` with
+POSIX shell-style quoting. Double/single quotes group spaces into one argument;
+the grouping quotes are removed. Escaped spaces, quoted empty arguments and
+newlines are preserved. Unmatched quotes or a trailing escape fail the operation
+before Streamlink/FFmpeg starts. No shell expansion, command substitution or glob
+expansion is performed. Docker Compose still applies its own variable
+interpolation; use `$$` when passing a literal dollar sign through Compose.
+
+For example, these Compose environment entries pass each header, filter and
+metadata value as one argument:
+
+```yaml
+environment:
+  - STREAMLINK_EXTRA_ARGS=--http-header "X-Recorder=archive worker" --stream-segment-threads 2
+  - ENCODE_EXTRA_ARGS=-vf "scale=1280:-2,setsar=1" -metadata "comment=Recorded automatically"
+```
+
+Optional Streamlink recipes for the bundled version:
+
+| Use | `STREAMLINK_EXTRA_ARGS` |
+| --- | --- |
+| Twitch low latency | `--twitch-low-latency --stream-segment-threads 2` |
+| Kick low latency | `--kick-low-latency --stream-segment-threads 2` |
+| Start at the earliest available HLS playlist segment | `--hls-live-restart --stream-segment-threads 2` |
+
+Low latency is optional and can increase buffering; the broadcaster must support
+it. See the [Streamlink options](https://streamlink.github.io/latest/cli.html#plugin-specific-options).
+The bundled Streamlink accepts `--twitch-disable-reruns` and `--twitch-disable-ads`
+as hidden compatibility switches, but they have no effect. It has no active
+rerun-filter setting, and Twitch ad filtering is automatic. Filtering pauses capture during the
+ad break rather than replacing it with broadcast content; see
+[Twitch embedded ads](https://streamlink.github.io/cli/plugins/twitch.html#embedded-ads).
+
+### Hardware encoding
+
+Set `ENCODE=true` and choose `ENCODE_ACCEL=nvenc`, `vaapi`, or `qsv`. Existing
+`ENCODE_VIDEO_CODEC=h264_nvenc`, `h264_vaapi`, or `h264_qsv` settings also work
+with the default `ENCODE_ACCEL=auto`. CPU encoding remains the default.
+
+| Backend | Quality options generated | Default preset | Device setup |
+| --- | --- | --- | --- |
+| CPU x264/x265 | `-crf 23` | `medium` | None |
+| NVIDIA NVENC | `-rc:v vbr -cq:v 23 -b:v 0` | `p4` | NVIDIA driver and NVIDIA Container Toolkit on the Docker host; GPU reservation below |
+| VAAPI (Intel/AMD) | `-rc_mode:v CQP -qp:v 23` | None | Render node passed through with `devices` |
+| Intel QSV | `-global_quality:v 23` | `medium` | Render node passed through with `devices`; QSV device initialized before input |
+
+Change hardware quality with `ENCODE_QUALITY`; lower nonzero values generally
+favor quality, but the same value is not equivalent across backends. NVENC accepts
+presets `p1`–`p7`; QSV accepts `veryfast` through `veryslow`. CPU-only CRF/preset
+flags are not injected into other custom CPU codecs; supply their options via
+`ENCODE_EXTRA_ARGS`. See [FFmpeg codec options](https://ffmpeg.org/ffmpeg-codecs.html)
+and [NVIDIA's FFmpeg guide](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.1/ffmpeg-with-nvidia-gpu/index.html).
+
+For VAAPI or QSV on a Linux Docker host:
+
+```yaml
+environment:
+  - ENCODE=true
+  - ENCODE_ACCEL=vaapi # or qsv
+  - ENCODE_QUALITY=23
+  - ENCODE_DEVICE=/dev/dri/renderD128
+devices:
+  - /dev/dri/renderD128:/dev/dri/renderD128
+```
+
+The root entrypoint adds the application user to the render node's group before
+switching users; it does not change device ownership or permissions on the host.
+Docker `group_add` alone is insufficient because `gosu` rebuilds supplementary
+groups. The image includes Mesa VAAPI drivers and, on amd64, Intel iHD/i965
+drivers. The host must provide a supported GPU, kernel driver, firmware and
+render node. Select the appropriate node when multiple GPUs are present.
+Debian's free Intel driver has a limited encoder set; some GPU generations need
+additional vendor media drivers/shaders in a custom image. Check the
+[Intel driver package's supported encoders](https://packages.debian.org/bookworm/intel-media-va-driver).
+
+VAAPI defaults to `-vf "format=nv12,hwupload"` with software decoding. If you
+provide a custom video filter/complex graph in `ENCODE_EXTRA_ARGS`, it replaces
+that default and must perform its own hardware upload, for example:
+`-vf "scale=1280:-2,format=nv12,hwupload"`. Avoid CPU-only `ENCODE_PRESET` values
+with VAAPI; leave it unset. See [FFmpeg hardware device setup](https://ffmpeg.org/ffmpeg.html#Advanced-Video-options).
+
+For NVENC, install NVIDIA Container Toolkit on the host and request a GPU:
+
+```yaml
+environment:
+  - ENCODE=true
+  - ENCODE_ACCEL=nvenc
+  - ENCODE_QUALITY=23
+  - ENCODE_PRESET=p4
+  - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: 1
+          capabilities: [gpu]
+```
+
+Hardware encoding does not enable GPU decoding or change the upload route.
+See [Docker's GPU reservation setup](https://docs.docker.com/compose/how-tos/gpu-support/)
+for host configuration.
+Normalization and validation still decode on the CPU. Every encoded part must
+pass the existing frame/timing/audio and publication checks. Hardware/driver
+failures retain the job for retry; there is no automatic CPU fallback.
+
+### Storage retention and sidecars
+
+After successful publication, `RETENTION_DAYS` prunes expired `.mp4`, `.ts`, and
+`.mkv` files under the current channel's storage directory. Age keeps the existing
+`find -mtime +N` whole-day rounding (more than N complete 24-hour periods).
+When an expired media file is deleted, its literal `stem.*` companions are also
+removed, regardless of sidecar age: for example `episode.nfo`, `episode.json`,
+`episode.jpg`, and `episode.en.srt`. Empty season directories are then removed.
+
+Sidecars remain when another retained media version shares that basename. The
+most specific media stem owns a sidecar, so expiring `episode.mp4` preserves
+`episode.part1.jpg` when `episode.part1.mp4` remains. Unrelated metadata, symlinks,
+other channel directories and temporary `.publish.*` directories are preserved.
+Pruning uses a per-channel `.retention.lock` in storage to serialize workers.
+
 ## Processing behavior
 
 Every recording first captures Streamlink's original bytes in `capture.bin`.
@@ -86,6 +213,11 @@ After capture completes, a normalization worker detects TS or MP4 from its conte
 checks every initialization period, and creates verified outputs. `REMUX=true`
 now runs after capture, so an FFmpeg failure cannot interrupt the recorder.
 MPEG-TS remains TS when `REMUX=false`; fragmented MP4 always becomes MP4.
+
+If recording exits before writing any media bytes, its empty job and active
+pointer are removed, even if Streamlink exits successfully. Empty segmented
+sessions also remove their child jobs and capture lock after writers stop.
+Nonempty interrupted captures remain available for recovery.
 
 Repeated compatible MP4 periods are joined only if frame content, sample counts,
 and presentation timing survive. Codec/track changes, or boundaries that cannot
@@ -159,10 +291,24 @@ encode, and runs independently of normalization/publication workers. An
 review. Preserve it during upgrades. Scratch must support hard links between
 session outputs and child jobs on that same filesystem.
 
-Only explicitly sealed segmented children resume automatically. An interrupted
-child retains `segment-incomplete` and requires inspection in an offline container;
-`AUTO_RECOVER_INTERRUPTED` never promotes it while its completion is uncertain.
-Retain the session original when inspecting or recovering those children.
+By default, only explicitly sealed children resume automatically. Recover a stopped
+segmented session with `recover.sh` as described below, or opt into
+`AUTO_RECOVER_INTERRUPTED=true`. Recovery validates closed output without another
+remux. If a muxer trailer or closed output is missing, it replays the retained raw
+source through the same downstream stream-copy segmenter, using the saved target
+duration. Older sessions use the current `YOUTUBE_SEGMENT_SECONDS`; retain the
+original setting when recovering them. The raw source is read directly without
+making a second broadcast-sized copy. Rebuilt acknowledged segments are checked
+and discarded; only missing children enter the queue.
+
+Recovery acquires writer and worker locks and verifies complete source video-frame
+coverage and audio/video packet counts before promoting any candidates. A live
+writer, insufficient scratch space, corrupt source, or identity mismatch leaves
+the original and existing jobs intact. Recovery can take time on long broadcasts;
+reserve space for missing segments and validation candidates. Interrupted
+broadcasts produce an **Interrupted recording recovered** alert, separately from
+the successful broadcast's **Recording Completed** alert. After publication,
+recovered sessions use the normal source audit and retirement process.
 
 ## Volumes and credentials
 
@@ -195,7 +341,7 @@ New recordings use `/etc/streamlink/scratch/<mode>/<channel>/queue-v2/`:
   advance automatically; uncertain partial recordings stay here for inspection.
 - `normalize/`: completed captures awaiting validation and stream-copy repair.
 - `quarantine/`: uncertain or corrupt jobs retained for inspection, without automatic
-  upload, encoding, publication, or deletion.
+  upload, encoding, or publication. Deleted after `QUARANTINE_RETENTION_DAYS` (default seven days).
 - `upload/`: verified parts awaiting upload or local upload handoff.
 - `encode/`: recordings awaiting successful encoding and publication.
 - `publish/`: recordings awaiting publication without encoding.
@@ -255,6 +401,22 @@ originals until their stored copies have been verified.
 
 For interrupted jobs in `queue-v2/active`, stop the recorder before inspection.
 Only explicitly completed jobs may be resumed; never promote an active writer.
+For an interrupted segmented session, pass the parent `sessions/recording.JOB`
+directory to the same offline tool; no manual completion marker is needed:
+
+```sh
+docker compose stop streamlinkrecorder
+docker compose run --rm --no-deps streamlinkrecorder bash /etc/streamlink/tools/recover.sh \
+  /etc/streamlink/scratch/twitch/CHANNEL/queue-v2/sessions/recording.JOB
+docker compose up -d streamlinkrecorder
+```
+
+This preserves existing upload/publication receipts and part numbers. Repeating
+the command after successful recovery does not queue those segments again.
+Truncated or corrupt source bytes that cannot pass full validation still require
+manual repair; the command retains them. Parent session originals are never
+removed by quarantine retention.
+
 For a completed quarantined job without an existing `normalized.json`, run the
 recovery tool in an offline container with the same volumes and environment:
 
@@ -279,8 +441,11 @@ than removing them to force a retry. An interrupted normalization can leave
 ### JSON status exporter (`status.json`)
 
 The container continuously writes an atomic status manifest to
-`/etc/streamlink/scratch/status.json` (and `<work_dir>/status.json`) for external dashboards
-(such as Home Assistant, Uptime Kuma, or monitoring scripts):
+`/etc/streamlink/scratch/status-<CHANNEL>-<MODE>.json` (and `<work_dir>/status.json`) for external dashboards
+(such as Home Assistant, Uptime Kuma, or monitoring scripts).
+
+Each channel/mode has its own root manifest when containers share scratch.
+Update dashboards that previously read the shared root `status.json` path.
 
 ```json
 {
@@ -363,7 +528,7 @@ Critical events are posted as distinct, separate messages:
 - **Recording completed**: Stream title, duration, and captured size when a recording finishes.
 - **Low disk space**: Warning when available disk space drops below `MIN_FREE_SPACE_GB` (debounced to once every 5 minutes).
 - **Job quarantined**: Alert when a capture fails normalization or integrity verification and requires manual review.
-- **YouTube quota exceeded**: Notification when daily YouTube API quota is hit, indicating the next Pacific midnight using a Discord timestamp displayed in each viewer's timezone.
+- **YouTube quota exceeded**: Notification when YouTube reports an API quota or upload-count limit, indicating the next Pacific midnight using a Discord timestamp displayed in each viewer's timezone.
 
 ## Development checks
 

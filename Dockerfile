@@ -37,6 +37,10 @@ ARG GROUP_ID=568
 ENV USER_NAME=${USER_NAME}
 RUN groupadd -r -g ${GROUP_ID} ${USER_NAME} && useradd -r -u ${USER_ID} -g ${USER_NAME} -m -s /bin/bash ${USER_NAME}
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates supervisor jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini util-linux tzdata && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends mesa-va-drivers && \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then \
+        apt-get install -y --no-install-recommends intel-media-va-driver i965-va-driver; \
+    fi && rm -rf /var/lib/apt/lists/*
 COPY --from=uploader /out/youtubeuploader /etc/youtubeuploader
 COPY --from=uploader /out/licenses /usr/share/doc/youtubeuploader
 COPY --from=streamlink /install /usr/local
@@ -51,7 +55,7 @@ RUN mkdir -p /var/run/dbus
 
 COPY ./download.sh /etc/streamlink/tools/
 COPY ./pipeline.sh ./publish.sh ./normalize.sh ./recover.sh ./status.sh ./audit.sh ./media.py /etc/streamlink/tools/
-COPY ./notifications.py ./operations.py ./healthcheck.py ./segment_capture.py /etc/streamlink/tools/
+COPY ./notifications.py ./operations.py ./healthcheck.py ./segment_capture.py ./session_recovery.py /etc/streamlink/tools/
 COPY ./encode.sh /etc/streamlink/tools/
 COPY ./upload.sh /etc/streamlink/tools/
 COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf

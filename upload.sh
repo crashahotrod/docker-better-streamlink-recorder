@@ -66,7 +66,7 @@ PY
         uploader_output=$(mktemp) || return 1
         if ! invoke_uploader "${uploader_args[@]}" > "$uploader_output" 2>&1; then
             cat "$uploader_output" >&2
-            if grep -q 'quotaExceeded' "$uploader_output"; then
+            if grep -qE 'quotaExceeded|uploadLimitExceeded' "$uploader_output"; then
                 rm -f "$uploader_output"
                 now=$(date +%s)
                 reset_time=$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/operations.py" quota-reset "$now") || return 1
@@ -74,7 +74,7 @@ PY
                     write_state "$quota_file" "$reset_time" &&
                         write_state "$job/upload.retry-at" "$reset_time" || return 1
                     wait_hours=$(( (reset_time - now) / 3600 ))
-                    printf '[Upload] YouTube API quota exceeded; client paused until midnight Pacific (~%dh)\n' "$wait_hours" >&2
+                    printf '[Upload] YouTube quota or upload limit reached; client paused until midnight Pacific (~%dh)\n' "$wait_hours" >&2
                     notify_youtube_quota_exceeded "$wait_hours" "$reset_time" || true
                 fi
             else

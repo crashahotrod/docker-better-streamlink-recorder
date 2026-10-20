@@ -155,10 +155,60 @@ for arg in "${STREAMLINK_ARGS[@]}"; do
     if [[ "$arg" == '--stream-segment-threads' ]]; then threads=$((threads + 1)); fi
 done
 [[ "$has_restart" -eq 1 && "$threads" -eq 1 ]]
+MODE=twitch TWITCH_USER_TOKEN=''
+STREAMLINK_EXTRA_ARGS='--hls-live-restart --stream-segment-threads 2 --hls-segment-ignore-names "ad,commercial" --twitch-api-header "Client-ID=abc 123"'
+build_streamlink_args
+expected=(--hls-live-restart --stream-segment-threads 2 --hls-segment-ignore-names 'ad,commercial' --twitch-api-header 'Client-ID=abc 123')
+[[ ${#STREAMLINK_ARGS[@]} -eq $((8 + ${#expected[@]})) ]]
+for i in "${!expected[@]}"; do [[ "${STREAMLINK_ARGS[i+8]}" == "${expected[i]}" ]]; done
+STREAMLINK_EXTRA_ARGS='--twitch-api-header "unterminated'
+if build_streamlink_args; then echo 'Malformed extra arguments accepted' >&2; exit 1; fi
 unset STREAMLINK_EXTRA_ARGS
 # Capture errors must propagate to the monitor and remain visible as errors.
 MODE=twitch API_RESPONSE='{"data":[{"title":"title","user_name":"Author","id":"123"}]}'
 record_stream() { return 1; }
 if monitor_once; then echo 'Failed recording accepted by monitor' >&2; exit 1; fi
 [[ $(cat "$WORK_DIR/channel.status") == error ]]
-printf 'PASS: token requests/cache, HTTP errors, offline/live decisions, splitting, authentication, and extra args\n'
+
+# Restore the real recording path after the monitor-decision mocks above.
+# shellcheck source=../download.sh
+source "$ROOT/download.sh"
+export REMUX=false UPLOAD=false ENCODE=false YOUTUBE_SPLITTING=false
+unset DISCORD_WEBHOOK_URL DISCORD_MONITOR_WEBHOOK_URL
+streamlink() {
+    printf '%s\0' "$@" > "$TEST_ROOT/streamlink-args"
+    local output=''
+    while (($#)); do
+        if [[ "$1" == --output ]]; then output="$2"; break; fi
+        shift
+    done
+    case "$TEST_CAPTURE_BYTES" in
+        missing) ;;
+        empty) : > "$output" ;;
+        partial) printf 'preserve interrupted bytes' > "$output" ;;
+    esac
+    return "$TEST_CAPTURE_STATUS"
+}
+for TEST_CAPTURE_BYTES in missing empty; do
+    for TEST_CAPTURE_STATUS in 0 1; do
+        for AUTO_RECOVER_INTERRUPTED in false true; do
+            if record_stream rejected Author 456; then echo 'Empty recording accepted' >&2; exit 1; fi
+            [[ ! -d "$RECORDING_JOB" && ! -f "$WORK_DIR/active.job" ]]
+            [[ -z $(find "$WORK_DIR/active" -name 'recording.*' -print -quit) ]]
+        done
+    done
+done
+rm "$TEST_ROOT/streamlink-args"
+STREAMLINK_EXTRA_ARGS='--twitch-api-header "unterminated'
+if record_stream malformed Author 457; then echo 'Malformed recording arguments accepted' >&2; exit 1; fi
+[[ ! -e "$TEST_ROOT/streamlink-args" && ! -f "$WORK_DIR/active.job" ]]
+[[ -z $(find "$WORK_DIR/active" -name 'recording.*' -print -quit) ]]
+unset STREAMLINK_EXTRA_ARGS
+TEST_CAPTURE_BYTES=partial TEST_CAPTURE_STATUS=1 AUTO_RECOVER_INTERRUPTED=false
+if record_stream partial Author 458; then exit 1; fi
+[[ -s "$RECORDING_JOB/capture.bin" && ! -f "$WORK_DIR/active.job" ]]
+mv "$RECORDING_JOB" "$TEST_ROOT/retained-partial"
+AUTO_RECOVER_INTERRUPTED=true
+if record_stream partial-auto Author 459; then exit 1; fi
+[[ -s "$WORK_DIR/normalize/${RECORDING_JOB##*/}/capture.bin" && ! -f "$WORK_DIR/active.job" ]]
+printf 'PASS: API/monitor decisions, quoted arguments, empty abort cleanup and nonempty recovery\n'

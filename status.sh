@@ -163,7 +163,7 @@ build_status_json() {
 write_status_files() {
     local json="$1"
     local scratch_dir="${SCRATCH_ROOT:-/etc/streamlink/scratch}"
-    local scratch_file="$scratch_dir/status.json"
+    local scratch_file="$scratch_dir/status-${CHANNEL}-${MODE}.json"
     local work_file="$WORK_DIR/status.json"
 
     mkdir -p -- "$scratch_dir" "$WORK_DIR" 2>/dev/null || true

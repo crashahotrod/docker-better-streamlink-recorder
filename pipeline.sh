@@ -21,6 +21,102 @@ write_state() {
     printf '%s\n' "$2" > "$1.tmp" && mv -f -- "$1.tmp" "$1"
 }
 
+parse_extra_args() {
+    python3 - "$1" <<'PY'
+import shlex
+import sys
+
+try:
+    args = shlex.split(sys.argv[1])
+except ValueError as error:
+    raise SystemExit(f'Invalid extra arguments: {error}')
+for arg in args:
+    sys.stdout.buffer.write(arg.encode() + b'\0')
+PY
+}
+
+load_extra_args() {
+    # A bare mapfile/process substitution hides parser failures. Wait for its producer.
+    local extra_args_fd extra_args_pid extra_args_status=0
+    exec {extra_args_fd}< <(parse_extra_args "$2") || return 1
+    extra_args_pid=$!
+    mapfile -d '' -t "$1" <&"$extra_args_fd" || extra_args_status=$?
+    exec {extra_args_fd}<&-
+    wait "$extra_args_pid" || return 1
+    return "$extra_args_status"
+}
+
+discard_empty_recording() {
+    local job="$1" active=''
+    [[ "${job%/*}" == "$WORK_DIR/active" && "${job##*/}" == recording.* &&
+        -d "$job" && ! -L "$job" && ! -s "$job/capture.bin" ]] || return 1
+    if [[ -f "$WORK_DIR/active.job" ]]; then read -r active < "$WORK_DIR/active.job" || true; fi
+    [[ "$active" != "$job" ]] || rm -f -- "$WORK_DIR/active.job" || return 1
+    find "$job" -depth -delete
+}
+
+# Output arrays are consumed by encode.sh after startup validation.
+# shellcheck disable=SC2034
+build_encoding_args() {
+    local requested="${ENCODE_ACCEL:-auto}" codec="${ENCODE_VIDEO_CODEC:-}"
+    local quality="${ENCODE_QUALITY:-23}" preset="${ENCODE_PRESET:-}" device="${ENCODE_DEVICE:-/dev/dri/renderD128}"
+    ENCODER_INPUT_ARGS=()
+    ENCODER_VIDEO_ARGS=()
+    case "$requested" in
+        auto|cpu|nvenc|vaapi|qsv) ;;
+        *) echo 'ERROR: ENCODE_ACCEL must be auto, cpu, nvenc, vaapi, or qsv.' >&2; return 1 ;;
+    esac
+    if [[ -z "$codec" ]]; then
+        case "$requested" in
+            auto|cpu) codec=libx264 ;;
+            *) codec="h264_$requested" ;;
+        esac
+    fi
+    case "$codec" in
+        *_nvenc) ENCODER_ACCEL=nvenc ;;
+        *_vaapi) ENCODER_ACCEL=vaapi ;;
+        *_qsv) ENCODER_ACCEL=qsv ;;
+        *) ENCODER_ACCEL=cpu ;;
+    esac
+    if [[ "$requested" != auto && "$requested" != "$ENCODER_ACCEL" ]]; then
+        echo 'ERROR: ENCODE_ACCEL conflicts with ENCODE_VIDEO_CODEC.' >&2
+        return 1
+    fi
+    if [[ ! "$quality" =~ ^[0-9]{1,2}$ ]] || (( 10#$quality > 51 )); then
+        echo 'ERROR: ENCODE_QUALITY must be 0-51 (1-51 for QSV).' >&2
+        return 1
+    fi
+    quality=$((10#$quality))
+    if [[ "$ENCODER_ACCEL" == qsv && "$quality" -eq 0 ]]; then
+        echo 'ERROR: QSV ENCODE_QUALITY must be 1-51.' >&2
+        return 1
+    fi
+    ENCODER_VIDEO_ARGS=(-c:v "$codec")
+    case "$ENCODER_ACCEL" in
+        cpu)
+            # Custom CPU encoders receive their own options through ENCODE_EXTRA_ARGS.
+            if [[ "$codec" == libx264 || "$codec" == libx265 ]]; then
+                ENCODER_VIDEO_ARGS+=(-crf "${ENCODE_CRF:-23}" -preset "${preset:-medium}")
+            fi
+            ;;
+        nvenc)
+            ENCODER_VIDEO_ARGS+=(-rc:v vbr -cq:v "$quality" -b:v 0 -preset "${preset:-p4}")
+            ;;
+        vaapi)
+            if [[ -n "$preset" ]]; then
+                echo 'ERROR: VAAPI has no ENCODE_PRESET; unset it and use ENCODE_EXTRA_ARGS for driver options.' >&2
+                return 1
+            fi
+            ENCODER_INPUT_ARGS=(-vaapi_device "$device")
+            ENCODER_VIDEO_ARGS+=(-rc_mode:v CQP -qp:v "$quality")
+            ;;
+        qsv)
+            ENCODER_INPUT_ARGS=(-init_hw_device "qsv=recorder:hw,child_device=$device")
+            ENCODER_VIDEO_ARGS+=(-global_quality:v "$quality" -preset "${preset:-medium}")
+            ;;
+    esac
+}
+
 check_free_space() {
     local target="$1" min_gb="${MIN_FREE_SPACE_GB:-0}"
     [[ "$min_gb" =~ ^[0-9]+$ ]] || min_gb=0
@@ -219,8 +315,8 @@ notify_youtube_quota_exceeded() {
             {name: "Uploads Resume", value: ("<t:" + ($reset_epoch | tostring) + ":F> (midnight Pacific)"), inline: true}
         ]')
 
-    notify_monitor_alert "🛑 YouTube API Quota Exceeded" \
-        "Daily API quota reached. Uploads sharing this YouTube client are paused until midnight Pacific." \
+    notify_monitor_alert "🛑 YouTube Quota or Upload Limit Reached" \
+        "YouTube API quota or upload limit reached. Uploads sharing this YouTube client are paused until midnight Pacific." \
         10181046 "$fields"
 }
 
@@ -257,8 +353,12 @@ prune_old_recordings() {
     [[ "$retention_days" =~ ^[0-9]+$ && "$retention_days" -gt 0 ]] || return 0
     local channel_storage="$STORAGE_DIR/$CHANNEL"
     [[ -d "$channel_storage" ]] || return 0
-    find "$channel_storage" -type f \( -name '*.mp4' -o -name '*.ts' -o -name '*.mkv' \) -mtime "+$retention_days" -delete 2>/dev/null || true
-    find "$channel_storage" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/operations.py" prune-recordings "$channel_storage" "$retention_days" ||
+        log_failure 'Storage retention deferred' "$channel_storage"
+}
+
+prune_quarantine() {
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/operations.py" prune-quarantine "$WORK_DIR" "${QUARANTINE_RETENTION_DAYS:-7}"
 }
 
 run_post_publish() {
@@ -283,6 +383,7 @@ quarantine_job() {
     local job="$1"
     log_failure 'Media requires recovery; capture retained' "$job"
     if [[ "${job%/*}" != "$WORK_DIR/quarantine" ]]; then
+        write_state "$job/quarantined-at" "$(date +%s)" || return 1
         advance_job "$job" quarantine || return 1
     fi
     notify_job_quarantined "$WORK_DIR/quarantine/${job##*/}" || true
@@ -472,6 +573,9 @@ normalize_job() {
 
 recover_completed_recordings() {
     local job input
+    if [[ "${AUTO_RECOVER_INTERRUPTED:-false}" == true ]]; then
+        python3 "$(dirname -- "${BASH_SOURCE[0]}")/session_recovery.py" recover-all "$WORK_DIR" || true
+    fi
     while IFS= read -r -d '' job; do
         if [[ -f "$job/completed" ]]; then
             advance_job "$job" normalize || log_failure 'Completed recording pending' "$job"

@@ -53,7 +53,7 @@ build_streamlink_args() {
     fi
     if [[ -n "${STREAMLINK_EXTRA_ARGS:-}" ]]; then
         local -a extra_streamlink_args=()
-        read -r -a extra_streamlink_args <<< "$STREAMLINK_EXTRA_ARGS"
+        load_extra_args extra_streamlink_args "$STREAMLINK_EXTRA_ARGS" || return 1
         STREAMLINK_ARGS+=("${extra_streamlink_args[@]}")
     fi
 }
@@ -65,7 +65,7 @@ set_channel_status() {
 }
 
 record_stream() {
-    local title="$1" author="$2" stream_id="$3" url stream_url output quality
+    local title="$1" author="$2" stream_id="$3" url stream_url output quality capture_status=0
     check_free_space "$WORK_DIR/active" || {
         log_failure 'Insufficient disk space in work directory to start recording' "$WORK_DIR/active"
         return 1
@@ -74,8 +74,8 @@ record_stream() {
         log_failure 'Insufficient disk space in storage directory to start recording' "$STORAGE_DIR"
         return 1
     }
+    build_streamlink_args || return 1
     new_recording_job "$title" "$author" "$stream_id" || return 1
-    build_streamlink_args
     if [[ "$MODE" == twitch ]]; then url="twitch.tv/$CHANNEL"; else url="kick.com/$CHANNEL"; fi
     stream_url="https://$url"
     if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
@@ -92,10 +92,16 @@ record_stream() {
                 log_failure 'Broadcast completion acknowledgment pending' "$RECORDING_JOB"
             return 0
         fi
-        log_failure 'Segmented capture interrupted; session and unfinished children retained' "$RECORDING_JOB"
+        log_failure 'Segmented capture failed' "$RECORDING_JOB"
         return 1
     fi
-    if ! streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" "$quality"; then
+    streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" "$quality" || capture_status=$?
+    if [[ ! -s "$output" ]]; then
+        log_failure 'No media captured; discarding empty recording' "$RECORDING_JOB"
+        discard_empty_recording "$RECORDING_JOB" || log_failure 'Empty recording cleanup pending' "$RECORDING_JOB"
+        return 1
+    fi
+    if (( capture_status != 0 )); then
         log_failure 'Recording interrupted; active capture retained' "$RECORDING_JOB"
         if [[ "${AUTO_RECOVER_INTERRUPTED:-false}" == true && -s "$output" ]]; then
             printf '[Pipeline] Auto-recovering interrupted capture: %q\n' "$RECORDING_JOB" >&2

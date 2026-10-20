@@ -6,7 +6,8 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=../entrypoint.sh
 source "$ROOT/entrypoint.sh"
 TEST_ROOT=$(mktemp -d)
-trap 'find "$TEST_ROOT" -depth -delete' EXIT
+GPU_TEST_GROUP=''
+trap 'if [[ -n "$GPU_TEST_GROUP" ]]; then groupdel "$GPU_TEST_GROUP"; fi; find "$TEST_ROOT" -depth -delete' EXIT
 chmod 755 -- "$TEST_ROOT"
 # Hosted runners may keep their checkout behind a private home directory.
 # Stage only the library needed by the app user, without changing checkout ACLs.
@@ -48,3 +49,17 @@ for filename in youtubeuploader_client_secrets.json youtubeuploader_request.toke
 done
 validate_upload_credentials
 printf 'PASS: fresh/reused directories writable as application user; media preserved\n'
+
+# A private null-device node exercises render-node group access without a GPU.
+GPU_TEST_GID=60000
+while getent group "$GPU_TEST_GID" > /dev/null; do GPU_TEST_GID=$((GPU_TEST_GID + 1)); done
+GPU_TEST_GROUP="recorder-gpu-$GPU_TEST_GID"
+mknod "$TEST_ROOT/render-node" c 1 3
+chown "root:$GPU_TEST_GID" "$TEST_ROOT/render-node"
+chmod 660 "$TEST_ROOT/render-node"
+if gosu "$USER_NAME" test -r "$TEST_ROOT/render-node"; then echo 'GPU access test was not restricted' >&2; exit 1; fi
+ENCODE=true ENCODE_ACCEL=vaapi ENCODE_DEVICE="$TEST_ROOT/render-node" prepare_encoding_device
+gosu "$USER_NAME" test -r "$TEST_ROOT/render-node"
+gosu "$USER_NAME" test -w "$TEST_ROOT/render-node"
+[[ $(stat -c %g "$TEST_ROOT/render-node") -eq "$GPU_TEST_GID" && $(stat -c %a "$TEST_ROOT/render-node") == 660 ]]
+printf 'PASS: passed-through device group access survives gosu without changing device permissions\n'

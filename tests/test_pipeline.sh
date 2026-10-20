@@ -52,8 +52,10 @@ for FAIL_STAGE in encode metadata; do
 done
 unset FAIL_STAGE
 new_job
-encode_job "$JOB"
+final=$(part_destination "$JOB" 0001 mp4)
+ENCODE_EXTRA_ARGS='-vf "scale=160:90, setsar=1" -metadata "comment=Quoted café metadata"' encode_job "$JOB"
 [[ ! -d "$JOB" ]]
+[[ $(ffprobe -v error -show_entries format_tags=comment -of default=nw=1:nk=1 "$final") == 'Quoted café metadata' ]]
 # Existing unrelated destinations are never replaced.
 new_job
 final=$(part_destination "$JOB" 0001 mp4)

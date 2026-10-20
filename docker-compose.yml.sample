@@ -12,14 +12,21 @@ services:
       - ENCODE=false
       - UPLOAD=false
       # - STREAM_QUALITY=best # e.g. 1080p60,720p60,best
-      # - STREAMLINK_EXTRA_ARGS= # e.g. --twitch-disable-ads
+      # - STREAMLINK_EXTRA_ARGS=--twitch-low-latency --stream-segment-threads 2
+      # For Kick, replace --twitch-low-latency with --kick-low-latency.
+      # Quote individual values with spaces, e.g. --http-header "X-Recorder=archive worker"
+      # Twitch ads are filtered automatically; legacy --twitch-disable-ads/--twitch-disable-reruns have no effect.
       # - AUTO_RECOVER_INTERRUPTED=false # Auto-recover and process interrupted captures (default false)
       # Optional encoding customization (when ENCODE=true)
-      # - ENCODE_CRF=23 # 0-51 (lower is higher quality, default 23)
-      # - ENCODE_PRESET=medium # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
-      # - ENCODE_VIDEO_CODEC=libx264
+      # - ENCODE_ACCEL=auto # auto (infer from codec), cpu, nvenc, vaapi, qsv
+      # - ENCODE_CRF=23 # CPU x264/x265 quality (0-51)
+      # - ENCODE_QUALITY=23 # Hardware CQ/QP/ICQ (0-51, QSV 1-51)
+      # - ENCODE_PRESET=medium # CPU/QSV default medium; NVENC default p4 (p1-p7); unset for VAAPI
+      # - ENCODE_VIDEO_CODEC=libx264 # Auto default; accelerator selects h264_nvenc/h264_vaapi/h264_qsv
+      # - ENCODE_DEVICE=/dev/dri/renderD128 # VAAPI/QSV; pass the same device below
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility # NVENC with NVIDIA Container Toolkit on host
       # - ENCODE_AUDIO_BITRATE=128k
-      # - ENCODE_EXTRA_ARGS=
+      # - ENCODE_EXTRA_ARGS=-vf "scale=1280:-2,setsar=1" -metadata "comment=Recorded automatically"
       # Optional YouTube settings (when UPLOAD=true)
       # - UPLOAD_BOT_NAME=name # Required when UPLOAD=true
       # - YOUTUBE_PRIVACY=public # public, private, or unlisted
@@ -36,13 +43,25 @@ services:
       # - RECORDER_STALE_SECONDS=180 # Error status after monitor/capture inactivity; minimum 150 seconds
       # - TWITCH_USER_TOKEN=yourUserToken # Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
       # - MIN_FREE_SPACE_GB=5 # Guardrail: Minimum free GB required on disk before recording (0=disabled)
-      # - RETENTION_DAYS=0 # Auto-prune recordings older than N days from storage (0=disabled)
+      # - RETENTION_DAYS=0 # Prune expired media and matching stem.* sidecars (0=disabled)
+      # - QUARANTINE_RETENTION_DAYS=7 # Delete quarantined jobs after N days (0=keep indefinitely)
       # - POST_PUBLISH_COMMAND= # Script/command to run after publication ($PUBLISHED_FILE, $PUBLISHED_CHANNEL, $PUBLISHED_MODE)
     restart: always
     volumes:
       - "streamlink_scratch:/etc/streamlink/scratch"
       - "streamlink_storage:/storage"
       - "streamlink_config:/config"
+    # VAAPI/QSV on Linux: entrypoint grants apps access to the render node's group.
+    # devices:
+    #   - /dev/dri/renderD128:/dev/dri/renderD128
+    # NVENC: request a GPU and set NVIDIA_DRIVER_CAPABILITIES above.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 volumes:
   streamlink_scratch:
   streamlink_storage:

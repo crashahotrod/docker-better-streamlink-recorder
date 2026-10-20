@@ -18,6 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import media
 import segment_capture as segmentation
+import session_recovery as recovery
 
 
 class SegmentationTests(unittest.TestCase):
@@ -62,6 +63,7 @@ class SegmentationTests(unittest.TestCase):
 import os, pathlib, sys, time
 with open(os.environ['CALLS'], 'a') as log: log.write(' '.join(sys.argv[1:]) + '\\n')
 assert '--stdout' in sys.argv and '--hls-duration' not in sys.argv
+if os.environ.get('EMPTY_SOURCE'): sys.exit(int(os.environ.get('EMPTY_EXIT', '1')))
 sys.stdout.buffer.write(pathlib.Path(os.environ['FIXTURE']).read_bytes())
 sys.stdout.buffer.flush()
 while os.environ.get('HOLD') and not pathlib.Path(os.environ['HOLD']).exists(): time.sleep(0.05)
@@ -240,8 +242,201 @@ run_queue_once publish publish_recording
         self.assertFalse((self.work / 'active.job').exists())
         self.assertTrue(list((self.work / 'active').glob('recording.*.seg*')))
         before = list((self.work / 'active').glob('recording.*'))
-        self.shell('AUTO_RECOVER_INTERRUPTED=true recover_completed_recordings')
+        self.shell('AUTO_RECOVER_INTERRUPTED=false recover_completed_recordings')
         self.assertEqual(before, list((self.work / 'active').glob('recording.*')))
+        self.shell('AUTO_RECOVER_INTERRUPTED=true recover_completed_recordings')
+        self.assertFalse(list((self.work / 'active').glob('recording.*')))
+        session = next((self.work / 'sessions').glob('recording.*'))
+        self.assertEqual('completed', json.loads((session / 'session.json').read_text())['status'])
+        self.publish()
+        segmentation.audit_sessions(self.work)
+        self.assertFalse(session.exists())
+
+    def test_empty_source_aborts_remove_session_children_pointer_and_capture_lock(self):
+        for status in ('0', '1'):
+            with self.subTest(status=status):
+                process = self.start(EMPTY_SOURCE='true', EMPTY_EXIT=status)
+                self.assertNotEqual(0, process.wait(timeout=30))
+                self.assertFalse((self.work / 'active.job').exists())
+                self.assertFalse(list((self.work / 'active').glob('recording.*')))
+                self.assertFalse(list((self.work / 'sessions').glob('recording.*')))
+                self.assertFalse(list(self.work.glob('capture-recording.*.lock')))
+                self.assertFalse(list((self.work / 'normalize').glob('recording.*')))
+
+    def test_empty_source_launch_failure_removes_job_but_short_capture_is_retained(self):
+        self.shell('new_recording_job missing Author 123')
+        parent = next((self.work / 'active').glob('recording.*'))
+        with patch.dict(os.environ, self.env):
+            capture = segmentation.Capture(parent, [str(self.bin / 'missing-streamlink')], 2)
+            self.assertEqual(1, capture.run())
+        self.assertFalse(capture.session.exists())
+        self.assertFalse(capture.child_path(1).exists())
+        self.assertFalse(pathlib.Path(capture.writer_lock.name).exists())
+        fixture = self.directory / 'short.bin'
+        fixture.write_bytes(b'partial')
+        process = self.start(FIXTURE=str(fixture), FAIL_SOURCE='true')
+        self.assertNotEqual(0, process.wait(timeout=30))
+        session = next((self.work / 'sessions').glob('recording.*'))
+        self.assertEqual(b'partial', (session / 'capture.bin').read_bytes())
+        self.assertTrue(list((self.work / 'active').glob('recording.*')))
+        self.assertTrue((self.work / f'capture-{session.name}.lock').exists())
+
+    def test_empty_source_stopped_before_first_byte_cleans_up(self):
+        self.shell('new_recording_job stopped Author 123')
+        parent = next((self.work / 'active').glob('recording.*'))
+        output = self.log.open('wb')
+        self.addCleanup(output.close)
+        process = subprocess.Popen([sys.executable, str(ROOT / 'segment_capture.py'), 'capture',
+                                    str(parent), '--', sys.executable, '-c', 'import time; time.sleep(60)'],
+                                   env=self.env, stdout=output, stderr=output)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        session = self.work / 'sessions' / parent.name
+        deadline = time.monotonic() + 15
+        while not (session / 'capture.bin').exists() and time.monotonic() < deadline:
+            if process.poll() is not None:
+                self.fail(self.log.read_text())
+            time.sleep(0.05)
+        self.assertTrue((session / 'capture.bin').exists(), self.log.read_text())
+        self.assertEqual(0, (session / 'capture.bin').stat().st_size)
+        process.terminate()
+        self.assertNotEqual(0, process.wait(timeout=20))
+        self.assertFalse(session.exists(), self.log.read_text())
+        self.assertFalse(list((self.work / 'active').glob('recording.*')))
+        self.assertFalse((self.work / 'active.job').exists())
+        self.assertFalse((self.work / f'capture-{session.name}.lock').exists())
+
+    def interrupted_tail(self, fixture='source.mp4'):
+        self.wait(self.start(FIXTURE=str(self.fixtures / fixture), YOUTUBE_SEGMENT_SECONDS='4'))
+        session = next((self.work / 'sessions').glob('recording.*'))
+        jobs = sorted((self.work / 'normalize').glob('recording.*'),
+                      key=lambda job: int((job / 'segment-index').read_text()))
+        tail = jobs[-1]
+        index = int((tail / 'segment-index').read_text())
+        active = self.work / 'active' / tail.name
+        tail.rename(active)
+        (active / 'completed').unlink()
+        (active / 'segment-incomplete').touch()
+        extension = 'mp4' if fixture.endswith('mp4') else 'ts'
+        os.link(active / 'capture.bin', session / 'outputs' / f'segment-{index}.{extension}')
+        manifest = json.loads((session / 'session.json').read_text())
+        manifest.update(status='interrupted', segments=list(range(1, index)), source_periods=[])
+        (session / 'session.json').write_text(json.dumps(manifest))
+        (session / 'broadcast-finished').unlink()
+        self.publish()  # Already published children must never be queued/uploaded twice.
+        return session, active, index
+
+    def test_offline_recovery_reuses_closed_tail_without_remux_and_is_idempotent(self):
+        session, active, index = self.interrupted_tail()
+        original = media.digest(session / 'capture.bin')
+        calls = [json.loads(line) for line in (self.directory / 'ffmpeg-calls').read_text().splitlines()]
+        self.shell('bash "$1/recover.sh" "$WORK_DIR/sessions/' + session.name + '"')
+        after = [json.loads(line) for line in (self.directory / 'ffmpeg-calls').read_text().splitlines()]
+        self.assertFalse(any('copy' in command or 'libx264' in command for command in after[len(calls):]))
+        self.assertEqual(original, media.digest(session / 'capture.bin'))
+        self.assertFalse(active.exists())
+        recovered = list((self.work / 'normalize').glob('recording.*'))
+        self.assertEqual([index], [int((job / 'segment-index').read_text()) for job in recovered])
+        self.shell('bash "$1/recover.sh" "$WORK_DIR/sessions/' + session.name + '"')
+        self.assertEqual(recovered, list((self.work / 'normalize').glob('recording.*')))
+        events = [json.loads(path.read_text())['payload'] for path in (self.work / 'notifications').glob('event.*.json')]
+        self.assertEqual(1, sum('Interrupted recording recovered' in json.dumps(event) for event in events))
+        self.assertEqual(1, sum('Recording Completed' in json.dumps(event) for event in events))  # Original successful fixture only.
+        self.publish()
+        segmentation.audit_sessions(self.work)
+        self.assertFalse(session.exists())
+
+    def test_recovery_rebuilds_unfinished_mp4_from_raw_with_one_stream_copy(self):
+        session, active, index = self.interrupted_tail()
+        original = media.digest(session / 'capture.bin')
+        # Simulate a killed muxer that never wrote its MP4 trailer/listing entry.
+        (active / 'capture.bin').write_bytes(b'no MP4 trailer')
+        for listing in session.glob('epoch-*.csv'):
+            rows = listing.read_text().splitlines(keepends=True)
+            listing.write_text(''.join(rows[:-1]))
+        before = [json.loads(line) for line in (self.directory / 'ffmpeg-calls').read_text().splitlines()]
+        self.shell('AUTO_RECOVER_INTERRUPTED=true recover_completed_recordings', YOUTUBE_SEGMENT_SECONDS='2')
+        # Saved segment duration wins over the current environment.
+        self.assertEqual('completed', json.loads((session / 'session.json').read_text())['status'])
+        after = [json.loads(line) for line in (self.directory / 'ffmpeg-calls').read_text().splitlines()]
+        self.assertEqual(1, sum('copy' in command for command in after[len(before):]))
+        self.assertFalse(any('libx264' in command for command in after[len(before):]))
+        self.assertEqual(original, media.digest(session / 'capture.bin'))
+        self.assertEqual([index], [int((job / 'segment-index').read_text())
+                                  for job in (self.work / 'normalize').glob('recording.*')])
+        self.publish()
+        segmentation.audit_sessions(self.work)
+        self.assertFalse(session.exists())
+
+    def test_recovery_refuses_live_writer_and_retains_original_on_low_space_or_bad_receipt(self):
+        session, active, _ = self.interrupted_tail('source.ts')
+        original = media.digest(session / 'capture.bin')
+        with segmentation.lock(self.work / f'capture-{session.name}.lock') as acquired:
+            self.assertTrue(acquired)
+            with self.assertRaises(recovery.CaptureError):
+                recovery.recover_session(self.work, session)
+        with patch.object(recovery, 'require_space', side_effect=segmentation.LowSpace('injected')):
+            with self.assertRaises(segmentation.LowSpace):
+                recovery.recover_session(self.work, session)
+        receipt = next(session.glob('seg*.published.json'))
+        value = json.loads(receipt.read_text())
+        value['video'][0][0]['sha256'] = '0' * 64
+        receipt.write_text(json.dumps(value))
+        with patch.dict(os.environ, self.env):
+            with self.assertRaises(recovery.CaptureError):
+                recovery.recover_session(self.work, session)
+        self.assertEqual(original, media.digest(session / 'capture.bin'))
+        self.assertTrue(active.exists())
+        self.assertFalse(list((self.work / 'normalize').glob('recording.*')))
+        self.assertEqual('interrupted', json.loads((session / 'session.json').read_text())['status'])
+
+    def test_recovery_of_multiple_mp4_epochs(self):
+        session, _, _ = self.interrupted_tail('periods/duplicate-changed-codec.mp4')
+        self.shell('AUTO_RECOVER_INTERRUPTED=true recover_completed_recordings')
+        self.assertEqual('completed', json.loads((session / 'session.json').read_text())['status'])
+        self.publish()
+        segmentation.audit_sessions(self.work)
+        self.assertFalse(session.exists())
+
+    def test_killed_controller_keeps_writer_lock_until_orphan_source_exits(self):
+        self.shell('new_recording_job crashed Author 123')
+        parent = next((self.work / 'active').glob('recording.*'))
+        marker = self.directory / 'release-orphan'
+        self.addCleanup(marker.touch)
+        output = self.log.open('wb')
+        self.addCleanup(output.close)
+        process = subprocess.Popen([sys.executable, str(ROOT / 'segment_capture.py'), 'capture',
+                                    str(parent), '--', str(self.bin / 'streamlink'), '--stdout'],
+                                   env=dict(self.env, HOLD=str(marker)), stdout=output, stderr=output)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        session = self.work / 'sessions' / parent.name
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            source = session / 'capture.bin'
+            if source.exists() and source.stat().st_size == pathlib.Path(self.env['FIXTURE']).stat().st_size:
+                break
+            if process.poll() is not None:
+                self.fail(self.log.read_text())
+            time.sleep(0.05)
+        else:
+            self.fail('Capture did not drain the source fixture')
+        process.kill()
+        process.wait(timeout=10)
+        with self.assertRaises(recovery.CaptureError):
+            recovery.recover_session(self.work, session)
+        marker.touch()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with segmentation.lock(self.work / f'capture-{session.name}.lock') as acquired:
+                if acquired:
+                    break
+            time.sleep(0.05)
+        else:
+            self.fail('Orphan writer did not exit')
+        self.shell('AUTO_RECOVER_INTERRUPTED=true recover_completed_recordings')
+        self.assertEqual('completed', json.loads((session / 'session.json').read_text())['status'])
+        self.publish()
+        segmentation.audit_sessions(self.work)
+        self.assertFalse(session.exists())
 
     def test_scratch_guard_includes_active_segment_processing_headroom(self):
         with patch.dict(os.environ, MIN_FREE_SPACE_GB='0'):

@@ -38,6 +38,7 @@ validate_environment() {
             errors=1
         fi
     fi
+    build_encoding_args || errors=1
     if [[ -n "${MIN_FREE_SPACE_GB:-}" ]]; then
         if [[ ! "$MIN_FREE_SPACE_GB" =~ ^[0-9]+$ ]]; then
             echo 'ERROR: MIN_FREE_SPACE_GB must be a non-negative integer.' >&2
@@ -50,6 +51,12 @@ validate_environment() {
             errors=1
         fi
     fi
+    value="${QUARANTINE_RETENTION_DAYS:-7}"
+    if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+        echo 'ERROR: QUARANTINE_RETENTION_DAYS must be a non-negative integer.' >&2
+        errors=1
+    fi
+    export QUARANTINE_RETENTION_DAYS="$value"
     value="${RECORDER_STALE_SECONDS:-180}"
     if [[ ! "$value" =~ ^[1-9][0-9]*$ ]] || (( value < 150 )); then
         echo 'ERROR: RECORDER_STALE_SECONDS must be an integer of at least 150 seconds.' >&2
@@ -83,6 +90,30 @@ prepare_directories() {
         }
         rm -- "$probe"
     done
+}
+
+prepare_encoding_device() {
+    [[ "${ENCODE:-false}" == true ]] || return 0
+    build_encoding_args || return 1
+    [[ "$ENCODER_ACCEL" == vaapi || "$ENCODER_ACCEL" == qsv ]] || return 0
+    local device="${ENCODE_DEVICE:-/dev/dri/renderD128}" device_gid device_group
+    if [[ ! -c "$device" ]]; then
+        printf 'ERROR: ENCODE_DEVICE is not an accessible DRM device: %s. Pass the render device into Docker.\n' "$device" >&2
+        return 1
+    fi
+    device_gid=$(stat -c %g -- "$device") || return 1
+    device_group=$(getent group "$device_gid" | cut -d: -f1) || device_group=''
+    if [[ -z "$device_group" ]]; then
+        device_group="recorder-gpu-$device_gid"
+        groupadd --gid "$device_gid" "$device_group" || return 1
+    fi
+    # gosu rebuilds supplementary groups; Docker group_add alone is insufficient.
+    # Match the passed-through node's group without changing its host permissions.
+    usermod --append --groups "$device_group" "$USER_NAME" || return 1
+    if ! gosu "$USER_NAME" test -r "$device" || ! gosu "$USER_NAME" test -w "$device"; then
+        printf 'ERROR: %s cannot read/write ENCODE_DEVICE: %s. Check host device permissions.\n' "$USER_NAME" "$device" >&2
+        return 1
+    fi
 }
 
 validate_upload_credentials() {
@@ -125,6 +156,7 @@ initialize_dbus() {
 entrypoint_main() {
     validate_environment
     prepare_directories
+    prepare_encoding_device
     validate_upload_credentials
     chmod 666 /dev/stdout /dev/stderr
     initialize_dbus

@@ -35,7 +35,7 @@ invoke_uploader() {
         if [[ "$previous" == -title ]]; then printf '%s' "$arg" > "$TEST_ROOT/last_title"; fi
         previous="$arg"
     done
-    if [[ "${FAIL_QUOTA:-false}" == true ]]; then printf quotaExceeded; return 1; fi
+    if [[ "${FAIL_QUOTA:-false}" == true ]]; then printf '%s' "${QUOTA_ERROR:-quotaExceeded}"; return 1; fi
     return 0
 }
 notify_discord() {
@@ -92,4 +92,17 @@ pathlib.Path(sys.argv[1]).write_bytes(('Long title ' * 30).encode() + b'\0')
 PY
 upload_job "$JOB"
 [[ $(cat "$TEST_ROOT/last_title") == *' - part-0003' && $(wc -m < "$TEST_ROOT/last_title") -le 100 ]]
+# The per-channel video-count limit uses the same persistent Pacific cooldown.
+new_upload
+FAIL_QUOTA=true QUOTA_ERROR=uploadLimitExceeded
+if upload_job "$JOB"; then echo 'Upload count limit accepted' >&2; exit 1; fi
+deadline=$(cat "$JOB/upload.retry-at")
+[[ "$deadline" -gt "$TEST_NOW" && ! -f "$JOB/parts/0001.uploaded" ]]
+[[ $(cat "$SCRATCH_ROOT/youtube-quota/$quota_key.retry-at") -eq "$deadline" ]]
+calls=$(wc -c < "$TEST_ROOT/attempts")
+CHANNEL=three
+pipeline_init
+new_upload
+if upload_job "$JOB"; then echo 'Upload count cooldown not shared' >&2; exit 1; fi
+[[ $(wc -c < "$TEST_ROOT/attempts") -eq "$calls" && $(cat "$JOB/upload.retry-at") -eq "$deadline" ]]
 printf 'PASS: receipt before notifications and persistent quota pause shared across channels\n'

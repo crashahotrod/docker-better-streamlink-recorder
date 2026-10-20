@@ -13,6 +13,8 @@ esac
 /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py' -v
 bash tests/test_pipeline.sh
 bash tests/test_download.sh
+bash tests/test_extra_args.sh
+bash tests/test_encoding.sh
 bash tests/test_queue.sh
 bash tests/test_startup.sh
 bash tests/test_notifications.sh

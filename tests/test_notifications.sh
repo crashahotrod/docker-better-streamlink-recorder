@@ -67,5 +67,15 @@ flock -u 9
 exec 9>&-
 [[ $(get_channel_status) == offline ]]
 status_cycle
-[[ -f "$SCRATCH_ROOT/status.json" && -f "$WORK_DIR/status.json" ]]
+[[ -f "$SCRATCH_ROOT/status-test-twitch.json" && -f "$WORK_DIR/status.json" ]]
+CHANNEL=another
+pipeline_init
+status_cycle
+MODE=kick CHANNEL=test
+pipeline_init
+status_cycle
+jq -e '.channel == "test" and .mode == "twitch"' "$SCRATCH_ROOT/status-test-twitch.json" > /dev/null
+jq -e '.channel == "another" and .mode == "twitch"' "$SCRATCH_ROOT/status-another-twitch.json" > /dev/null
+jq -e '.channel == "test" and .mode == "kick"' "$SCRATCH_ROOT/status-test-kick.json" > /dev/null
+[[ ! -f "$SCRATCH_ROOT/status.json" ]]
 printf 'PASS: local notification producers, failed enqueue isolation, live recorder and stalled-capture status\n'

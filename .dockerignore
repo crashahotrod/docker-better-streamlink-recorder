@@ -11,9 +11,11 @@
 !notifications.py
 !operations.py
 !healthcheck.py
+!segment_capture.py
 !encode.sh
 !upload.sh
 !status.sh
+!audit.sh
 !entrypoint.sh
 !supervisord.conf
 !build/

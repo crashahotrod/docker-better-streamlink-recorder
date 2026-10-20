@@ -56,6 +56,12 @@ validate_environment() {
         errors=1
     fi
     export RECORDER_STALE_SECONDS="$value"
+    value="${YOUTUBE_SEGMENT_SECONDS:-21600}"
+    if [[ ! "$value" =~ ^[1-9][0-9]{0,4}$ ]] || (( value > 42900 )); then
+        echo 'ERROR: YOUTUBE_SEGMENT_SECONDS must be an integer between 1 and 42900.' >&2
+        errors=1
+    fi
+    export YOUTUBE_SEGMENT_SECONDS="$value"
     (( errors == 0 ))
 }
 
@@ -68,7 +74,7 @@ prepare_directories() {
     chown -R "$USER_NAME:$USER_NAME" "${CONFIG_DIR:-/config}" "$STORAGE_DIR" \
         "${SCRATCH_ROOT:-/etc/streamlink/scratch}" \
         "${LOG_DIR:-/var/log/streamlink}" "${DBUS_RUN_DIR:-/var/run/dbus}"
-    for directory in "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish,notifications} \
+    for directory in "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish,notifications,sessions} \
         "${SCRATCH_ROOT:-/etc/streamlink/scratch}/youtube-quota" \
         "${SCRATCH_ROOT:-/etc/streamlink/scratch}/discord-state" "$STORAGE_DIR" "${CONFIG_DIR:-/config}"; do
         probe=$(gosu "$USER_NAME" mktemp "$directory/.write-test.XXXXXXXX") || {

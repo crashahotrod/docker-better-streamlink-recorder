@@ -472,7 +472,9 @@ def normalize(job):
             candidate = output_parts / f'{number:04d}.{extension}'
             expected = combined([item[1] for item in group])
             try:
-                if extension == 'ts':
+                if extension == 'ts' or (len(group) == 1 and container == 'mp4' and
+                        (job / 'segmenter-output').is_file() and
+                        (job / 'segmenter-output').read_text().strip() == 'true'):
                     shutil.copyfile(group[0][0], candidate)
                     actual = group[0][1]
                 else:
@@ -499,6 +501,13 @@ def normalize(job):
                 continue
             manifest['parts'].append({'id': f'{number:04d}', 'file': f'parts/{candidate.name}',
                 'extension': extension, 'sha256': digest(candidate), 'validation': public(actual)})
+        if (job / 'segment-index').is_file():
+            for part in manifest['parts']:
+                report = part['validation']
+                starts = [Fraction(value) for value in report['decoded_start']]
+                ends = [start + Fraction(duration) for start, duration in zip(starts, report['decoded_duration'])]
+                if max(ends) - min(starts) > 43170 or (output_parts / pathlib.Path(part['file']).name).stat().st_size >= 240_000_000_000:
+                    raise UnsafeMedia('Segment exceeds the upload duration or size ceiling')
         if digest(source) != source_hash:
             raise UnsafeMedia('Recovery input changed during normalization')
         os.replace(output_parts, parts)

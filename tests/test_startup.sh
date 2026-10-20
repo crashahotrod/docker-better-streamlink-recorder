@@ -53,6 +53,10 @@ for val in -1 abc; do
     if (RETENTION_DAYS="$val"; validate_environment 2>/dev/null); then echo "Invalid RETENTION_DAYS $val accepted" >&2; exit 1; fi
 done
 for val in 150 180 600; do (RECORDER_STALE_SECONDS="$val"; validate_environment); done
+for val in 1 21600 42900; do (YOUTUBE_SEGMENT_SECONDS="$val"; validate_environment); done
+for val in 0 -1 42901 invalid 00006; do
+    if (YOUTUBE_SEGMENT_SECONDS="$val"; validate_environment 2>/dev/null); then echo "Invalid segment duration $val accepted" >&2; exit 1; fi
+done
 for val in 0 149 -1 abc; do
     if (RECORDER_STALE_SECONDS="$val"; validate_environment 2>/dev/null); then echo "Invalid RECORDER_STALE_SECONDS $val accepted" >&2; exit 1; fi
 done

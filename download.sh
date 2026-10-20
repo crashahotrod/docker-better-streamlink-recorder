@@ -51,9 +51,6 @@ build_streamlink_args() {
     if [[ "$MODE" == twitch && -n "${TWITCH_USER_TOKEN:-}" ]]; then
         STREAMLINK_ARGS+=(--twitch-force-client-integrity --twitch-api-header "Authorization=OAuth $TWITCH_USER_TOKEN")
     fi
-    if [[ "${YOUTUBE_SPLITTING:-false}" == true ]]; then
-        STREAMLINK_ARGS+=(--hls-duration 11h59m30s)
-    fi
     if [[ -n "${STREAMLINK_EXTRA_ARGS:-}" ]]; then
         local -a extra_streamlink_args=()
         read -r -a extra_streamlink_args <<< "$STREAMLINK_EXTRA_ARGS"
@@ -87,6 +84,17 @@ record_stream() {
     # Keep the original independent of normalization failures and decoder exits.
     output="$RECORDING_JOB/capture.bin"
     quality="${STREAM_QUALITY:-best}"
+    if [[ "${YOUTUBE_SPLITTING:-false}" == true ]]; then
+        if python3 "$(dirname -- "${BASH_SOURCE[0]}")/segment_capture.py" capture "$RECORDING_JOB" -- \
+            streamlink "${STREAMLINK_ARGS[@]}" --stdout "$url" "$quality"; then
+            notify_recording_completed "$WORK_DIR/sessions/${RECORDING_JOB##*/}" || true
+            write_state "$WORK_DIR/sessions/${RECORDING_JOB##*/}/broadcast-finished" true || \
+                log_failure 'Broadcast completion acknowledgment pending' "$RECORDING_JOB"
+            return 0
+        fi
+        log_failure 'Segmented capture interrupted; session and unfinished children retained' "$RECORDING_JOB"
+        return 1
+    fi
     if ! streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" "$quality"; then
         log_failure 'Recording interrupted; active capture retained' "$RECORDING_JOB"
         if [[ "${AUTO_RECOVER_INTERRUPTED:-false}" == true && -s "$output" ]]; then

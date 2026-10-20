@@ -143,7 +143,7 @@ for MODE in twitch kick; do
                 if [[ "$arg" == 11h59m30s ]]; then duration=$((duration + 1)); fi
             done
             if [[ "$MODE" == twitch && -n "$TWITCH_USER_TOKEN" ]]; then [[ "$auth" -eq 1 ]]; else [[ "$auth" -eq 0 ]]; fi
-            if [[ "$YOUTUBE_SPLITTING" == true ]]; then [[ "$duration" -eq 1 ]]; else [[ "$duration" -eq 0 ]]; fi
+            [[ "$duration" -eq 0 ]]
         done
     done
 done

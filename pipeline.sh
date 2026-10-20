@@ -4,7 +4,7 @@
 pipeline_init() {
     WORK_DIR="${SCRATCH_ROOT:-/etc/streamlink/scratch}/${MODE:?}/${CHANNEL:?}/queue-v2"
     STORAGE_DIR="${STORAGE_DIR:-/storage}"
-    mkdir -p -- "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish,notifications} \
+    mkdir -p -- "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish,notifications,sessions} \
         "${SCRATCH_ROOT:-/etc/streamlink/scratch}/youtube-quota" \
         "${SCRATCH_ROOT:-/etc/streamlink/scratch}/discord-state" || return 1
 }
@@ -137,6 +137,8 @@ notify_recording_completed() {
 
     if [[ -f "$job/normalized.json" ]]; then
         parts=$(jq '.parts | length' "$job/normalized.json" 2>/dev/null || echo 1)
+    elif [[ -f "$job/segment-count" ]]; then
+        read -r parts < "$job/segment-count" || parts=1
     fi
 
     fields=$(jq -n \
@@ -317,12 +319,20 @@ part_file() {
 }
 
 part_destination() {
-    local job="$1" id="$2" extension="$3" stem season count
+    local job="$1" id="$2" extension="$3" stem season count segment
     read_field "$job/stem" stem && read -r season < "$job/season" || return 1
     [[ "$season" =~ ^[0-9]{6}$ && "$stem" != */* && -n "$stem" && "$id" =~ ^[0-9]{4}$ ]] || return 1
     [[ "$extension" == mp4 || "$extension" == ts ]] || return 1
     count=$(jq '.parts | length' "$job/normalized.json") || return 1
-    if (( count > 1 )); then stem="$stem - part-$id"; fi
+    if [[ -f "$job/segment-index" ]]; then
+        read -r segment < "$job/segment-index" || return 1
+        [[ "$segment" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+        printf -v segment '%04d' "$segment"
+        stem="$stem - part-$segment"
+        if (( count > 1 )); then stem="$stem - subpart-$id"; fi
+    elif (( count > 1 )); then
+        stem="$stem - part-$id"
+    fi
     printf '%s/%s/Season %s/%s.%s\n' "$STORAGE_DIR" "$CHANNEL" "$season" "$stem" "$extension"
 }
 
@@ -379,6 +389,9 @@ remove_completed_job() {
         part_committed "$job" "$id" "$extension" || return 1
     done < <(part_ids "$job")
     retired="${job%/*}/.completed.${job##*/}"
+    if [[ -f "$job/segment-index" ]]; then
+        python3 "$(dirname -- "${BASH_SOURCE[0]}")/segment_capture.py" receipt "$job" || return 1
+    fi
     [[ ! -e "$retired" ]] || return 1
     mv -T -n -- "$job" "$retired" && [[ ! -d "$job" ]] || return 1
     cleanup_retired_job "$retired"
@@ -398,12 +411,12 @@ new_recording_job() {
     # Reserve bytes for extension and a unique recording identifier; truncate
     # only the title, without cutting a UTF-8 codepoint in half.
     stem=$(python3 - "$author" "$title" "$season" "$episode" "$MODE" \
-        "$stream_id" "${RECORDING_JOB##*/}" <<'PY'
+        "$stream_id" "${RECORDING_JOB##*/}" "${YOUTUBE_SPLITTING:-false}" <<'PY'
 import sys
-author, title, season, episode, mode, stream, identifier = sys.argv[1:]
+author, title, season, episode, mode, stream, identifier, splitting = sys.argv[1:]
 prefix = f'{author.replace("/", "-")} - s{season}e{episode} - '
 suffix = f' - {{edition-{mode}}} - {stream}-{identifier}'
-budget = 224 - len((prefix + suffix).encode('utf-8'))
+budget = (200 if splitting == 'true' else 224) - len((prefix + suffix).encode('utf-8'))
 if budget < 0:
     raise SystemExit('Recording identity exceeds filename limit')
 safe = title.replace('/', '-').encode('utf-8')[:budget].decode('utf-8', 'ignore')
@@ -442,14 +455,18 @@ route_recording() {
 }
 
 complete_recording() {
-    local input
+    local input active=''
     if [[ -f "$1/capture.bin" ]]; then input="$1/capture.bin"; else input=$(job_media "$1") || return 1; fi
     [[ -s "$input" ]] || return 1
-    rm -f -- "$WORK_DIR/active.job"
+    if [[ -f "$WORK_DIR/active.job" ]]; then read -r active < "$WORK_DIR/active.job" || active=''; fi
+    if [[ "$active" == "$1" ]]; then rm -f -- "$WORK_DIR/active.job"; fi
     write_state "$1/completed" true && advance_job "$1" normalize
 }
 
 normalize_job() {
+    if [[ -f "$1/segment-index" && ! -f "$1/normalized.json" ]]; then
+        python3 "$(dirname -- "${BASH_SOURCE[0]}")/segment_capture.py" space "$1" || return 1
+    fi
     ensure_normalized_job "$1" && route_recording "$1"
 }
 
@@ -458,7 +475,7 @@ recover_completed_recordings() {
     while IFS= read -r -d '' job; do
         if [[ -f "$job/completed" ]]; then
             advance_job "$job" normalize || log_failure 'Completed recording pending' "$job"
-        elif [[ "${AUTO_RECOVER_INTERRUPTED:-false}" == true ]]; then
+        elif [[ "${AUTO_RECOVER_INTERRUPTED:-false}" == true && ! -f "$job/segment-index" ]]; then
             if [[ -f "$job/capture.bin" ]]; then input="$job/capture.bin"; else input=$(job_media "$job" 2>/dev/null || true); fi
             if [[ -n "$input" && -s "$input" ]]; then
                 printf '[Pipeline] Auto-recovering orphaned active capture: %q\n' "$job" >&2

@@ -6,7 +6,7 @@ import sys
 
 
 def check(environ=os.environ, run=subprocess.run):
-    names = ['download', 'normalize', 'publish', 'status', 'notify']
+    names = ['download', 'normalize', 'publish', 'status', 'notify', 'audit']
     names += [name for name in ('upload', 'encode') if environ.get(name.upper(), 'false') == 'true']
     expected = {'streamlink_' + name for name in names}
     try:

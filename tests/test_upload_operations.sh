@@ -30,6 +30,11 @@ new_upload() {
 }
 invoke_uploader() {
     printf attempt >> "$TEST_ROOT/attempts"
+    local previous='' arg
+    for arg in "$@"; do
+        if [[ "$previous" == -title ]]; then printf '%s' "$arg" > "$TEST_ROOT/last_title"; fi
+        previous="$arg"
+    done
     if [[ "${FAIL_QUOTA:-false}" == true ]]; then printf quotaExceeded; return 1; fi
     return 0
 }
@@ -78,4 +83,13 @@ CURRENT_JOB="$JOB"
 TEST_NOW=$((deadline + 1))
 upload_job "$JOB"
 [[ -f "$WORK_DIR/publish/${JOB##*/}/parts/0001.uploaded" ]]
+new_upload
+CURRENT_JOB="$JOB"
+printf '3\n' > "$JOB/segment-index"
+python3 - "$JOB/title" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_bytes(('Long title ' * 30).encode() + b'\0')
+PY
+upload_job "$JOB"
+[[ $(cat "$TEST_ROOT/last_title") == *' - part-0003' && $(wc -m < "$TEST_ROOT/last_title") -le 100 ]]
 printf 'PASS: receipt before notifications and persistent quota pause shared across channels\n'

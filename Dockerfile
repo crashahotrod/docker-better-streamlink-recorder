@@ -50,8 +50,8 @@ RUN mkdir -p /etc/streamlink/scratch
 RUN mkdir -p /var/run/dbus
 
 COPY ./download.sh /etc/streamlink/tools/
-COPY ./pipeline.sh ./publish.sh ./normalize.sh ./recover.sh ./status.sh ./media.py /etc/streamlink/tools/
-COPY ./notifications.py ./operations.py ./healthcheck.py /etc/streamlink/tools/
+COPY ./pipeline.sh ./publish.sh ./normalize.sh ./recover.sh ./status.sh ./audit.sh ./media.py /etc/streamlink/tools/
+COPY ./notifications.py ./operations.py ./healthcheck.py ./segment_capture.py /etc/streamlink/tools/
 COPY ./encode.sh /etc/streamlink/tools/
 COPY ./upload.sh /etc/streamlink/tools/
 COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf

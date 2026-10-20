@@ -8,7 +8,7 @@ invoke_uploader() {
 }
 
 upload_job() (
-    local job="$1" id input title recorded_date encode count part_title
+    local job="$1" id input title recorded_date encode count part_title segment
     local uploader_output video_id video_url notify_msg now reset_time wait_hours quota_key quota_file retry_at=0
     quota_key=$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/operations.py" quota-key \
         "${CONFIG_DIR:-/config}/youtubeuploader_client_secrets.json") || return 1
@@ -30,7 +30,21 @@ upload_job() (
             return 1
         fi
         part_title="$recorded_date - $title"
-        if (( count > 1 )); then part_title="$part_title - part $id"; fi
+        if [[ -f "$job/segment-index" ]]; then
+            read -r segment < "$job/segment-index" || return 1
+            [[ "$segment" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+            printf -v segment '%04d' "$segment"
+            part_title=$(python3 - "$recorded_date" "$title" "$segment" "$id" "$count" <<'PY'
+import sys
+date, title, segment, part, count = sys.argv[1:]
+prefix = f'{date} - '
+suffix = f' - part-{segment}' + (f' - subpart-{part}' if int(count) > 1 else '')
+print(prefix + title[:max(0, 100 - len(prefix + suffix))] + suffix, end='')
+PY
+            ) || return 1
+        elif (( count > 1 )); then
+            part_title="$part_title - part $id"
+        fi
         local -a uploader_args=(
             -title "$part_title"
             -privacy "${YOUTUBE_PRIVACY:-public}"

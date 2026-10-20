@@ -13,6 +13,7 @@ package. The runner checks shell syntax and ShellCheck before behavioral tests.
 | Discord payload limits/mentions, durable retries, shared rate limits, persistent-message lifecycle, webhook rotation/query parameters and worker exclusion | `test_discord.py` |
 | Required/enabled worker health, Pacific quota resets including DST, and client scope identity | `test_operations.py` |
 | Upload success receipts before notification work and quota cooldown shared across channel workers | `test_upload_operations.sh` |
+| Continuous downstream TS/MP4 splitting, all processing flags, publication before broadcast end, real live HLS stdout capture, codec/init changes, child status/naming, source audits, failed tails, and disk reserve exhaustion | `test_segmentation.py` |
 | MP4 initialization periods, compatible joins, codec/track changes, audio-first inputs, audio offsets/settings, B-frames, variable timing, truncated/uncertain inputs, sample counts, complete manifest accounting, source/output checksums, CLI validation, error diagnostics | `test_media_normalization.py` |
 | Real TS capture and metadata through all 16 service/remux/upload/encode routes, all visibility choices, VFR encoding, separate filesystems, denied destination writes, capture retention, interrupted encode/normalization and simulated disk-full recovery | `test_media.sh` |
 | Quarantine at every consumer boundary, per-part upload/publication receipts, retries, lock exclusion, collisions, partial copies, changed final files, interrupted cleanup and offline recovery | `test_pipeline.sh` |

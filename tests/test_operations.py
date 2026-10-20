@@ -39,7 +39,7 @@ class HealthTests(unittest.TestCase):
 
     def test_every_enabled_worker_must_be_running(self):
         env = {'UPLOAD': 'true', 'ENCODE': 'true'}
-        for worker in ('download', 'normalize', 'publish', 'status', 'notify', 'upload', 'encode'):
+        for worker in ('download', 'normalize', 'publish', 'status', 'notify', 'audit', 'upload', 'encode'):
             for state in ('FATAL', 'STOPPED', 'EXITED', 'STARTING', 'BACKOFF'):
                 with self.subTest(worker=worker, state=state):
                     self.assertFalse(health.check(env, self.runner(**{'streamlink_' + worker: state})))

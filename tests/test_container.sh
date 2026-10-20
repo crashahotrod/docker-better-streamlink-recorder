@@ -50,7 +50,7 @@ source /etc/streamlink/tools/pipeline.sh
 pipeline_init
 new_recording_job smoke test 1
 printf 'preserve across restart' > "$RECORDING_JOB/media.ts"
-for stage in active normalize quarantine upload encode publish notifications; do [[ -w "$WORK_DIR/$stage" ]]; done
+for stage in active normalize quarantine upload encode publish notifications sessions; do [[ -w "$WORK_DIR/$stage" ]]; done
 /usr/bin/python3 - <<'PY'
 import os
 from supervisor.options import ServerOptions
@@ -60,7 +60,7 @@ programs = {p.name: p.autostart for g in options.process_group_configs for p in 
 assert programs['streamlink_upload'] == (os.environ['UPLOAD'] == 'true')
 assert programs['streamlink_encode'] == (os.environ['ENCODE'] == 'true')
 assert programs['streamlink_download'] and programs['streamlink_publish'] and programs['streamlink_normalize']
-assert programs['streamlink_status'] and programs['streamlink_notify']
+assert programs['streamlink_status'] and programs['streamlink_notify'] and programs['streamlink_audit']
 PY
 SH
     done

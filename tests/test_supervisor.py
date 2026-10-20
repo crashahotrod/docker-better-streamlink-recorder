@@ -27,7 +27,7 @@ class SupervisorTests(unittest.TestCase):
                         programs = {p.name: p for g in options.process_group_configs for p in g.process_configs}
                         expected = {'download': True, 'normalize': True, 'publish': True,
                                     'upload': upload == 'true', 'encode': encode == 'true',
-                                    'status': True, 'notify': True}
+                                    'status': True, 'notify': True, 'audit': True}
                         self.assertEqual({f'streamlink_{name}' for name in expected}, set(programs))
                         for name, enabled in expected.items():
                             process = programs[f'streamlink_{name}']

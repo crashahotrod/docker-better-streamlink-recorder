@@ -24,6 +24,7 @@ services:
       # - UPLOAD_BOT_NAME=name # Required when UPLOAD=true
       # - YOUTUBE_PRIVACY=public # public, private, or unlisted
       # - YOUTUBE_SPLITTING=false
+      # - YOUTUBE_SEGMENT_SECONDS=21600 # Continuous segment target: 6 hours; range 1-42900 seconds
       # - YOUTUBE_PLAYLIST_ID= # Playlist ID to append uploaded videos to
       # - YOUTUBE_TAGS= # Comma-separated tags, e.g. gaming,stream,vod
       # - YOUTUBE_CATEGORY_ID= # e.g. 20 for Gaming

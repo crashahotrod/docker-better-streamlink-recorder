@@ -29,7 +29,7 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `CLIENT_SECRET` | Required | Corresponding application client secret. |
 | `STREAM_QUALITY` | `best` | Stream quality string passed to Streamlink (e.g. `1080p60,720p60,best`). |
 | `STREAMLINK_EXTRA_ARGS` | Unset | Extra arguments passed to Streamlink (e.g. `--twitch-disable-ads`). |
-| `AUTO_RECOVER_INTERRUPTED` | `false` | Automatically recover and process interrupted captures when a stream drops. |
+| `AUTO_RECOVER_INTERRUPTED` | `false` | Automatically recover interrupted captures in the original, unsplit recording mode. Unsealed segmented tails require offline review. |
 | `REMUX` | `false` | After capture, stream-copy TS to MP4. MP4 input is normalized as MP4 regardless of this flag. |
 | `ENCODE` | `false` | Convert completed recordings to H.264/AAC MP4. |
 | `ENCODE_CRF` | `23` | FFmpeg Constant Rate Factor for encoding (0–51). |
@@ -40,7 +40,8 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `UPLOAD` | `false` | Upload completed recordings to YouTube before optional encoding. |
 | `UPLOAD_BOT_NAME` | Required for uploads | Name included in the upload description. |
 | `YOUTUBE_PRIVACY` | `public` | Upload visibility: `public`, `private`, or `unlisted`. Use `private` for smoke tests. |
-| `YOUTUBE_SPLITTING` | `false` | Limit each recording segment to 11h59m30s for YouTube. |
+| `YOUTUBE_SPLITTING` | `false` | Continuously record and publish closed segments while the broadcast continues, using downstream stream-copy splitting. |
+| `YOUTUBE_SEGMENT_SECONDS` | `21600` | Target segment duration (6 hours). Integer from `1` to `42900` (11h55m), allowing room for keyframe-aligned cuts. Used when `YOUTUBE_SPLITTING=true`. |
 | `YOUTUBE_PLAYLIST_ID` | Unset | Optional YouTube playlist ID to append uploaded videos to. |
 | `YOUTUBE_TAGS` | Unset | Optional comma-separated tags for uploaded videos. |
 | `YOUTUBE_CATEGORY_ID` | Unset | Optional YouTube numeric category ID (e.g. `20` for Gaming). |
@@ -80,6 +81,7 @@ Successful uploads save their per-part receipt before notification work begins.
 ## Processing behavior
 
 Every recording first captures Streamlink's original bytes in `capture.bin`.
+For segmented recordings, that original lives under `sessions/` as described below.
 After capture completes, a normalization worker detects TS or MP4 from its contents,
 checks every initialization period, and creates verified outputs. `REMUX=true`
 now runs after capture, so an FFmpeg failure cannot interrupt the recorder.
@@ -108,6 +110,59 @@ and MP4 sample accounting. Encoding must preserve the verified video frame count
 and timing. The original capture is removed only after every part is published
 and checksummed.
 Audio is optional for streams that do not provide it.
+
+### Continuous YouTube segmentation
+
+With `YOUTUBE_SPLITTING=true`, one Streamlink CLI session writes continuous stdout
+to a disk-backed relay. The relay preserves the original bytes in
+`queue-v2/sessions/recording.<parent_id>/capture.bin`. Downstream FFmpeg uses
+`-c copy` to create keyframe-aligned segments while capture continues. Segmentation
+never enables encoding. A new MP4 initialization period starts a new FFmpeg input
+epoch, preserving codec/init changes without reconnecting Streamlink.
+
+The target is `YOUTUBE_SEGMENT_SECONDS` (six hours by default). Actual cuts follow
+source keyframes. Closed files must pass the 11h59m30s duration ceiling and a
+conservative 240 GB size ceiling before they can advance; normalization checks
+decoded presentation duration as well. Unsafe or oversized results retain their
+original source for inspection. Upload completion still depends on validation,
+network bandwidth, and API quota.
+
+Child jobs are named `recording.<parent_id>.seg<N>`. Each carries `segment-index`,
+`segment-parent`, and `segment-epoch` metadata. Completed children enter the usual
+normalize/upload/encode/publish queues immediately, and `active.job` follows the
+currently growing child's `capture.bin`. Status duration and size describe that
+child. Filenames and upload titles include `part-0001`, `part-0002`, and so on;
+an additional normalization part uses `subpart-0001` to avoid collisions. Long
+upload titles are shortened while preserving their segment suffix.
+
+TS stays TS with `REMUX=false`; `REMUX=true` and MP4 inputs produce finalized MP4
+directly in the segmenter. Normalization validates and copies these finalized
+files without another remux. `ENCODE=true` retains its existing explicit encoding
+stage after upload. Segment handoffs produce pipeline logs; the Discord
+**Recording Completed** alert is sent once when the continuous broadcast capture
+finishes successfully, using the full broadcast's captured size and duration.
+
+Scratch space is checked before capture, continuously while draining stdout, and
+at rotations. Segmented capture reserves the larger of `MIN_FREE_SPACE_GB` and
+1 GiB, plus twice the growing segment's size for processing. Normalization also
+waits for this headroom before creating candidates. If the reserve is reached,
+capture stops safely, queues a disk alert, and retains the original and unfinished
+children. This safety floor applies even when `MIN_FREE_SPACE_GB=0`.
+
+Reserve space for the **original entire broadcast**, the current segment, and
+normalization/encoding candidates. After the broadcast finishes and every child
+is checksummed in storage, a separate audit worker checks source packet counts
+and the exact decoded video-frame sequence across segment boundaries before
+removing the session's original bytes. This adds a validation decode, not an
+encode, and runs independently of normalization/publication workers. An
+`audit-failed` or `interrupted` session stays in `sessions/` for manual
+review. Preserve it during upgrades. Scratch must support hard links between
+session outputs and child jobs on that same filesystem.
+
+Only explicitly sealed segmented children resume automatically. An interrupted
+child retains `segment-incomplete` and requires inspection in an offline container;
+`AUTO_RECOVER_INTERRUPTED` never promotes it while its completion is uncertain.
+Retain the session original when inspecting or recovering those children.
 
 ## Volumes and credentials
 
@@ -145,6 +200,7 @@ New recordings use `/etc/streamlink/scratch/<mode>/<channel>/queue-v2/`:
 - `encode/`: recordings awaiting successful encoding and publication.
 - `publish/`: recordings awaiting publication without encoding.
 - `notifications/`: queued Discord events, independent of recording jobs and their cleanup.
+- `sessions/`: segmented-broadcast metadata, original bytes, diagnostics, and child publication receipts.
 
 Shared `youtube-quota/` and `discord-state/` directories live directly under the
 scratch root. Preserve these along with channel queues when upgrading.
@@ -268,7 +324,7 @@ The container continuously writes an atomic status manifest to
 - `disk_space`: Available gigabytes on the scratch and storage filesystems.
 
 The Docker healthcheck requires the download, normalization, publication, status,
-and notification workers, plus upload/encode workers enabled by their flags, to
+notification and source-audit workers, plus upload/encode workers enabled by their flags, to
 be `RUNNING`. Disabled workers are excluded. Status export runs independently of
 Discord delivery, so slow webhooks cannot stop local status updates.
 

@@ -67,6 +67,8 @@ def prune_quarantine(work, days, now=None):
         if not acquired:
             return
         directory = work / 'quarantine'
+        if not directory.is_dir():
+            return
         for job in sorted(directory.iterdir()):
             if job.is_symlink() or not job.is_dir():
                 continue
@@ -76,8 +78,15 @@ def prune_quarantine(work, days, now=None):
             if not job.name.startswith('recording.'):
                 continue
             marker = job / 'quarantined-at'
-            # Legacy jobs have no entry timestamp: use the directory's age.
-            entered = marker.stat().st_mtime if marker.exists() else job.stat().st_mtime
+            # Respect recorded quarantine timestamp when present; fallback to directory mtime.
+            if marker.exists():
+                try:
+                    entered = float(marker.read_text().strip())
+                    entered = min(entered, marker.stat().st_mtime)
+                except (ValueError, OSError):
+                    entered = marker.stat().st_mtime
+            else:
+                entered = job.stat().st_mtime
             if entered > cutoff:
                 continue
             retired = job.with_name('.expired.' + job.name)

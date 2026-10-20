@@ -29,7 +29,7 @@ context = {
 }
 for key, value in context.items():
     template = template.replace(f'{{{key}}}', str(value))
-print(template, end='')
+print(template[:5000], end='')
 PY
 }
 
@@ -41,7 +41,7 @@ upload_job() (
     quota_file="${SCRATCH_ROOT:-/etc/streamlink/scratch}/youtube-quota/$quota_key.retry-at"
     # Serialize clients across channel workers sharing the persistent scratch root.
     exec 7> "$quota_file.lock"
-    flock -n 7 || return 1
+    flock -n 7 || return 75
     ensure_normalized_job "$job" || return 1
     read_field "$job/title" title && read -r recorded_date < "$job/recorded-date" || return 1
     count=$(jq '.parts | length' "$job/normalized.json") || return 1
@@ -55,7 +55,6 @@ upload_job() (
             write_state "$job/upload.retry-at" "$retry_at"
             return 1
         fi
-        part_title="$recorded_date - $title"
         if [[ -f "$job/segment-index" ]]; then
             read -r segment < "$job/segment-index" || return 1
             [[ "$segment" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
@@ -68,19 +67,39 @@ suffix = f' - part-{segment}' + (f' - subpart-{part}' if int(count) > 1 else '')
 print(prefix + title[:max(0, 100 - len(prefix + suffix))] + suffix, end='')
 PY
             ) || return 1
-        elif (( count > 1 )); then
-            part_title="$part_title - part $id"
+        else
+            part_title=$(python3 - "$recorded_date" "$title" "$id" "$count" <<'PY'
+import sys
+date, title, part, count = sys.argv[1:]
+prefix = f'{date} - '
+suffix = f' - part {part}' if int(count) > 1 else ''
+print(prefix + title[:max(0, 100 - len(prefix + suffix))] + suffix, end='')
+PY
+            ) || return 1
         fi
         local raw_description final_description final_tags
         raw_description="${YOUTUBE_DESCRIPTION:-Uploaded Automatically by ${UPLOAD_BOT_NAME:?}}"
         final_description=$(format_youtube_template "$raw_description" "$part_title" "$id" "$count" "$segment") || final_description="$raw_description"
 
         local thumbnail="$job/parts/$id.thumbnail.jpg"
-        if [[ ! -s "$thumbnail" ]]; then
-            local thumb_time="${YOUTUBE_THUMBNAIL_TIMESTAMP:-00:01:00}"
-            ffmpeg -nostdin -y -v error -ss "$thumb_time" -i "$input" -vframes 1 -q:v 2 "$thumbnail" 2>/dev/null || true
+        if [[ "${YOUTUBE_UPLOAD_THUMBNAIL:-true}" == true ]]; then
             if [[ ! -s "$thumbnail" ]]; then
-                ffmpeg -nostdin -y -v error -i "$input" -vframes 1 -q:v 2 "$thumbnail" 2>/dev/null || true
+                local thumb_time="${YOUTUBE_THUMBNAIL_TIMESTAMP:-00:01:00}"
+                ffmpeg -nostdin -y -v error -ss "$thumb_time" -i "$input" -vframes 1 -q:v 2 "$thumbnail" 2>/dev/null || true
+                if [[ ! -s "$thumbnail" ]]; then
+                    ffmpeg -nostdin -y -v error -i "$input" -vframes 1 -q:v 2 "$thumbnail" 2>/dev/null || true
+                fi
+                if [[ -s "$thumbnail" ]]; then
+                    local thumb_size
+                    thumb_size=$(stat -c %s "$thumbnail" 2>/dev/null || stat -f %z "$thumbnail" 2>/dev/null || wc -c < "$thumbnail" 2>/dev/null || echo 0)
+                    if (( thumb_size > 2000000 )); then
+                        if ffmpeg -nostdin -y -v error -i "$thumbnail" -vf "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease" -q:v 5 "$thumbnail.tmp.jpg" 2>/dev/null; then
+                            mv -f "$thumbnail.tmp.jpg" "$thumbnail"
+                        else
+                            rm -f "$thumbnail.tmp.jpg"
+                        fi
+                    fi
+                fi
             fi
         fi
 
@@ -93,7 +112,7 @@ PY
             -cache "${CONFIG_DIR:-/config}/youtubeuploader_request.token"
             -metaJSONout "$job/parts/$id.remote.json"
         )
-        if [[ -s "$thumbnail" ]]; then
+        if [[ "${YOUTUBE_UPLOAD_THUMBNAIL:-true}" == true && -s "$thumbnail" ]]; then
             uploader_args+=(-thumbnail "$thumbnail")
         fi
         if [[ -n "${YOUTUBE_PLAYLIST_ID:-}" ]]; then

@@ -120,5 +120,21 @@ upload_job "$JOB"
 [[ $(cat "$TEST_ROOT/last_description") == "Channel: three | Stream: https://twitch.tv/three | Part: 0001/1 | Title: Test upload" ]]
 [[ $(cat "$TEST_ROOT/last_tags") == "three,twitch,part-0001" ]]
 [[ $(cat "$TEST_ROOT/last_thumbnail") == "$JOB/parts/0001.thumbnail.jpg" ]]
+rm -f "$TEST_ROOT/last_thumbnail"
+# Test YOUTUBE_UPLOAD_THUMBNAIL=false
+new_upload
+CURRENT_JOB="$JOB"
+printf thumb_data > "$JOB/parts/0001.thumbnail.jpg"
+YOUTUBE_UPLOAD_THUMBNAIL=false upload_job "$JOB"
+[[ ! -f "$TEST_ROOT/last_thumbnail" ]]
+# Test non-segmented long title truncation
+new_upload
+CURRENT_JOB="$JOB"
+python3 - "$JOB/title" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_bytes(('Very long stream title ' * 20).encode() + b'\0')
+PY
+upload_job "$JOB"
+[[ $(wc -m < "$TEST_ROOT/last_title") -le 100 ]]
 unset YOUTUBE_DESCRIPTION YOUTUBE_TAGS
 printf 'PASS: receipt before notifications and persistent quota pause shared across channels\n'

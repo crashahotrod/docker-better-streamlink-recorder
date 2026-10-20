@@ -33,10 +33,14 @@ for variable in MODE CHANNEL CLIENT_ID CLIENT_SECRET USER_NAME; do
         echo "Missing $variable accepted" >&2; exit 1
     fi
 done
-for variable in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED; do
+for variable in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL; do
     if (export "$variable=invalid"; validate_environment 2>/dev/null); then
         echo "Invalid $variable accepted" >&2; exit 1
     fi
+done
+for val in -1 0 abc; do
+    if (PUID="$val"; configure_user_ids 2>/dev/null); then echo "Invalid PUID $val accepted" >&2; exit 1; fi
+    if (PGID="$val"; configure_user_ids 2>/dev/null); then echo "Invalid PGID $val accepted" >&2; exit 1; fi
 done
 for YOUTUBE_PRIVACY in public private unlisted; do validate_environment; done
 if (YOUTUBE_PRIVACY=invalid; validate_environment 2>/dev/null); then exit 1; fi

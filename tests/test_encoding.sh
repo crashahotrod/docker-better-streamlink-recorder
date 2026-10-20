@@ -102,6 +102,20 @@ ENCODE_VIDEO_CODEC=mpeg4 encode_job "$job"
 get_args
 assert_no_option -crf
 assert_no_option -preset
+assert_no_option -tag:v
+ENCODE_VIDEO_CODEC=libx265 encode_job "$job"
+get_args
+assert_option -tag:v hvc1
+assert_option -crf 23
+assert_option -preset medium
+ENCODE_VIDEO_CODEC=hevc_nvenc encode_job "$job"
+get_args
+assert_option -tag:v hvc1
+assert_option -c:v hevc_nvenc
+ENCODE_VIDEO_CODEC=libsvtav1 encode_job "$job"
+get_args
+assert_option -crf 23
+assert_option -preset medium
 rm "$TEST_ROOT/args"
 if ENCODE_ACCEL=vaapi ENCODE_PRESET=medium encode_job "$job"; then exit 1; fi
 if ENCODE_ACCEL=cpu ENCODE_VIDEO_CODEC=h264_nvenc encode_job "$job"; then exit 1; fi

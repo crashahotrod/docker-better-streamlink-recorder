@@ -92,10 +92,13 @@ build_encoding_args() {
         return 1
     fi
     ENCODER_VIDEO_ARGS=(-c:v "$codec")
+    if [[ "$codec" == libx265 || "$codec" == *_hevc || "$codec" == hevc_* ]]; then
+        ENCODER_VIDEO_ARGS+=(-tag:v hvc1)
+    fi
     case "$ENCODER_ACCEL" in
         cpu)
             # Custom CPU encoders receive their own options through ENCODE_EXTRA_ARGS.
-            if [[ "$codec" == libx264 || "$codec" == libx265 ]]; then
+            if [[ "$codec" == libx264 || "$codec" == libx265 || "$codec" == libsvtav1 ]]; then
                 ENCODER_VIDEO_ARGS+=(-crf "${ENCODE_CRF:-23}" -preset "${preset:-medium}")
             fi
             ;;
@@ -603,7 +606,7 @@ publish_recording() {
 # flock is released by the kernel after a crash; no stale PID files or claims.
 # Each scan holds the stage lock through processing, preventing duplicate workers.
 run_queue_once() (
-    local stage="$1" handler="$2" job now retry_at attempts delay
+    local stage="$1" handler="$2" job now retry_at attempts delay current_retry status=0
     exec 8> "$WORK_DIR/$stage.lock"
     flock -n 8 || return 0
     while IFS= read -r -d '' job; do
@@ -618,7 +621,14 @@ run_queue_once() (
         fi
         [[ "$retry_at" =~ ^[0-9]+$ ]] || retry_at=0
         (( now >= retry_at )) || continue
+        status=0
         if "$handler" "$job"; then
+            continue
+        else
+            status=$?
+        fi
+        # Status 75 represents lock contention or temporary client lock; defer without penalizing retries.
+        if (( status == 75 )); then
             continue
         fi
         # A successful stage transfer may have already removed the source path.

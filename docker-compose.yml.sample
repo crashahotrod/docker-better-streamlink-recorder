@@ -7,6 +7,8 @@ services:
       - CHANNEL=channelToMonitorHere
       - CLIENT_ID=yourClientID
       - CLIENT_SECRET=yourClientSecret
+      # - PUID=1000 # User ID for file permissions in /storage and /etc/streamlink/scratch
+      # - PGID=1000 # Group ID for file permissions in /storage and /etc/streamlink/scratch
       # Optional recording settings
       - REMUX=false
       - ENCODE=false
@@ -19,10 +21,10 @@ services:
       # - AUTO_RECOVER_INTERRUPTED=false # Auto-recover and process interrupted captures (default false)
       # Optional encoding customization (when ENCODE=true)
       # - ENCODE_ACCEL=auto # auto (infer from codec), cpu, nvenc, vaapi, qsv
-      # - ENCODE_CRF=23 # CPU x264/x265 quality (0-51)
+      # - ENCODE_CRF=23 # CPU x264/x265/libsvtav1 quality (0-51)
       # - ENCODE_QUALITY=23 # Hardware CQ/QP/ICQ (0-51, QSV 1-51)
       # - ENCODE_PRESET=medium # CPU/QSV default medium; NVENC default p4 (p1-p7); unset for VAAPI
-      # - ENCODE_VIDEO_CODEC=libx264 # Auto default; accelerator selects h264_nvenc/h264_vaapi/h264_qsv
+      # - ENCODE_VIDEO_CODEC=libx264 # Auto default; accelerator selects h264_nvenc/h264_vaapi/h264_qsv (or hevc_*/av1_*)
       # - ENCODE_DEVICE=/dev/dri/renderD128 # VAAPI/QSV; pass the same device below
       # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility # NVENC with NVIDIA Container Toolkit on host
       # - ENCODE_AUDIO_BITRATE=128k
@@ -30,6 +32,7 @@ services:
       # Optional YouTube settings (when UPLOAD=true)
       # - UPLOAD_BOT_NAME=name # Required when UPLOAD=true
       # - YOUTUBE_PRIVACY=public # public, private, or unlisted
+      # - YOUTUBE_UPLOAD_THUMBNAIL=true # Generate and upload custom video thumbnail (set false for unverified channels)
       # - YOUTUBE_SPLITTING=false
       # - YOUTUBE_SEGMENT_SECONDS=21600 # Continuous segment target: 6 hours; range 1-42900 seconds
       # - YOUTUBE_PLAYLIST_ID= # Playlist ID to append uploaded videos to

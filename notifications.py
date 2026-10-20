@@ -133,7 +133,7 @@ def sanitize(payload):
 
 
 def webhook_url(webhook, message_id=None):
-    parts = urllib.parse.urlsplit(webhook)
+    parts = urllib.parse.urlsplit(webhook.strip())
     query = dict(urllib.parse.parse_qsl(parts.query))
     query.pop('wait', None)
     path = parts.path.rstrip('/')
@@ -145,7 +145,7 @@ def webhook_url(webhook, message_id=None):
 
 
 def webhook_key(webhook):
-    parts = urllib.parse.urlsplit(webhook)
+    parts = urllib.parse.urlsplit(webhook.strip())
     return hashlib.sha256((parts.netloc + parts.path.rstrip('/')).encode()).hexdigest()
 
 
@@ -286,6 +286,9 @@ class Worker:
             code, _, retry_at = self.request(webhook, event['payload'])
             if 200 <= code < 300:
                 path.unlink()
+            elif code in (400, 401, 404):
+                path.rename(path.with_suffix('.invalid'))
+                print(f'[Discord] Event delivery failed with permanent HTTP {code}; event moved to .invalid.', file=sys.stderr)
             else:
                 attempts = min(event.get('attempts', 0) + 1, 6)
                 event.update(attempts=attempts, retry_at=max(retry_at, self.now() + min(30 * 2 ** (attempts - 1), 900)))

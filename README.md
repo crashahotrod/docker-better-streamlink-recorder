@@ -13,7 +13,7 @@ with `docker build -t streamlink-recorder:local .` and set the service's `image`
 to `streamlink-recorder:local`.
 
 The image runs the recorder and workers as the `apps` user (UID/GID 568 by
-default). Its root entrypoint creates the queue directories and assigns volume
+default, customizable via `PUID` and `PGID`). Its root entrypoint creates the queue directories and assigns volume
 ownership before starting the application. Existing scratch files are preserved.
 Local `docker-compose.yml`, `.env` files and uploader credentials are excluded
 from Git. The Docker build context includes runtime sources, security pins and
@@ -23,6 +23,8 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `PUID` | `568` | Optional runtime user ID for storage and scratch file ownership (e.g. `1000`). |
+| `PGID` | `568` | Optional runtime group ID for storage and scratch file ownership (e.g. `1000`). |
 | `MODE` | Required | `twitch` or `kick`, lowercase. |
 | `CHANNEL` | Required | Channel slug, without URL or path separators. |
 | `CLIENT_ID` | Required | Application client ID for the selected service's live-status API. |
@@ -43,6 +45,7 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `UPLOAD` | `false` | Upload completed recordings to YouTube before optional encoding. |
 | `UPLOAD_BOT_NAME` | Required for uploads | Name included in the upload description. |
 | `YOUTUBE_PRIVACY` | `public` | Upload visibility: `public`, `private`, or `unlisted`. Use `private` for smoke tests. |
+| `YOUTUBE_UPLOAD_THUMBNAIL` | `true` | Extract and set custom video thumbnail on upload (set `false` for unverified YouTube channels). |
 | `YOUTUBE_SPLITTING` | `false` | Continuously record and publish closed segments while the broadcast continues, using downstream stream-copy splitting. |
 | `YOUTUBE_SEGMENT_SECONDS` | `21600` | Target segment duration (6 hours). Integer from `1` to `42900` (11h55m), allowing room for keyframe-aligned cuts. Used when `YOUTUBE_SPLITTING=true`. |
 | `YOUTUBE_PLAYLIST_ID` | Unset | Optional YouTube playlist ID to append uploaded videos to. |

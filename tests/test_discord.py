@@ -184,6 +184,16 @@ class DiscordTests(unittest.TestCase):
         self.assertTrue(path.with_suffix('.invalid').exists())
         self.assertFalse(valid.exists())
 
+    def test_permanent_http_errors_move_to_invalid_immediately(self):
+        for code in (400, 401, 404):
+            with self.subTest(code=code):
+                path = self.event()
+                self.open.side_effect = self.error(code)
+                self.worker.deliver()
+                self.assertFalse(path.exists())
+                self.assertTrue(path.with_suffix('.invalid').exists())
+                path.with_suffix('.invalid').unlink()
+
     def test_partial_budget_never_emits_empty_unicode_fields(self):
         payload = discord.sanitize({'embeds': [{'description': 'a' * 4096,
             'footer': {'text': 'b' * 1902}, 'fields': [{'name': '\U0001f600', 'value': '\U0001f600'}]}]})

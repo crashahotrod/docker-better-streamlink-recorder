@@ -129,6 +129,12 @@ class QuarantineTests(unittest.TestCase):
             operations.prune_quarantine(work, 7)
             self.assertFalse(retired.exists())
 
+    def test_missing_quarantine_directory_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = pathlib.Path(directory)
+            # quarantine directory does not exist
+            operations.prune_quarantine(work, 7)
+
 
 class StorageRetentionTests(unittest.TestCase):
     def setUp(self):

@@ -21,6 +21,9 @@ validate_environment() {
         case "$value" in true|false) ;; *) printf 'ERROR: %s must be true or false.\n' "$name" >&2; errors=1 ;; esac
         export "$name=$value"
     done
+    value="${YOUTUBE_UPLOAD_THUMBNAIL:-true}"
+    case "$value" in true|false) ;; *) printf 'ERROR: YOUTUBE_UPLOAD_THUMBNAIL must be true or false.\n' >&2; errors=1 ;; esac
+    export YOUTUBE_UPLOAD_THUMBNAIL="$value"
     value="${DISCORD_NOTIFY_ON_ERROR:-true}"
     case "$value" in true|false) ;; *) printf 'ERROR: DISCORD_NOTIFY_ON_ERROR must be true or false.\n' >&2; errors=1 ;; esac
     export DISCORD_NOTIFY_ON_ERROR="$value"
@@ -70,6 +73,28 @@ validate_environment() {
     fi
     export YOUTUBE_SEGMENT_SECONDS="$value"
     (( errors == 0 ))
+}
+
+configure_user_ids() {
+    local target_uid="${PUID:-}" target_gid="${PGID:-}"
+    if [[ -n "$target_gid" ]]; then
+        if [[ ! "$target_gid" =~ ^[0-9]+$ ]] || (( target_gid == 0 )); then
+            echo 'ERROR: PGID must be a positive integer.' >&2
+            return 1
+        fi
+        if (( target_gid != $(id -g "$USER_NAME") )); then
+            groupmod -o -g "$target_gid" "$USER_NAME" || return 1
+        fi
+    fi
+    if [[ -n "$target_uid" ]]; then
+        if [[ ! "$target_uid" =~ ^[0-9]+$ ]] || (( target_uid == 0 )); then
+            echo 'ERROR: PUID must be a positive integer.' >&2
+            return 1
+        fi
+        if (( target_uid != $(id -u "$USER_NAME") )); then
+            usermod -o -u "$target_uid" "$USER_NAME" || return 1
+        fi
+    fi
 }
 
 prepare_directories() {
@@ -155,6 +180,7 @@ initialize_dbus() {
 
 entrypoint_main() {
     validate_environment
+    configure_user_ids
     prepare_directories
     prepare_encoding_device
     validate_upload_credentials

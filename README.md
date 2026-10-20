@@ -49,6 +49,9 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `RETENTION_DAYS` | `0` | Auto-prune recordings older than N days from storage (`0` disables pruning). |
 | `POST_PUBLISH_COMMAND` | Unset | Custom shell command evaluated when a recording part is published. |
 | `DISCORD_WEBHOOK_URL` | Unset | Optional Discord webhook for rich embed go-live and upload-complete alerts. Notification failures do not stop recording. |
+| `DISCORD_MONITOR_WEBHOOK_URL` | Unset | Dedicated webhook for the persistent status message and operational alerts. Only operational alerts fall back to `DISCORD_WEBHOOK_URL`. |
+| `DISCORD_NOTIFY_ON_ERROR` | `true` | Queue operational alerts, including recording completion, disk warnings, quarantine, and quota errors. Does not disable a dedicated persistent status message. |
+| `RECORDER_STALE_SECONDS` | `180` | Report an error after this many seconds without monitor progress or capture writes. Must be at least `150` to allow bounded API requests. |
 | `TWITCH_USER_TOKEN` | Unset | Optional user OAuth token for authenticated Twitch access, such as subscribed-channel ad handling. |
 
 Boolean values must be exactly `true` or `false`. Numeric values (`ENCODE_CRF`, `MIN_FREE_SPACE_GB`, `RETENTION_DAYS`)
@@ -64,8 +67,15 @@ exported in its environment.
 
 When `DISCORD_WEBHOOK_URL` is set, rich embeds are sent on stream start and upon YouTube upload
 completion (including direct links to uploaded videos). If YouTube's daily API upload quota is
-exceeded, upload workers detect `quotaExceeded` and automatically back off until the quota
-resets at 08:00 UTC.
+exceeded, upload workers detect `quotaExceeded` and automatically back off until the next
+midnight in `America/Los_Angeles`, including daylight saving changes. Uploaders using
+the same YouTube application client ID share a persistent cooldown and upload lock
+when they share the scratch volume, even if their channel or config paths differ.
+Independent scratch volumes cannot share this coordination state.
+
+Notifications are written atomically to a persistent outbox and delivered by a
+separate worker. Recording and upload workers never wait for Discord HTTP requests.
+Successful uploads save their per-part receipt before notification work begins.
 
 ## Processing behavior
 
@@ -134,6 +144,10 @@ New recordings use `/etc/streamlink/scratch/<mode>/<channel>/queue-v2/`:
 - `upload/`: verified parts awaiting upload or local upload handoff.
 - `encode/`: recordings awaiting successful encoding and publication.
 - `publish/`: recordings awaiting publication without encoding.
+- `notifications/`: queued Discord events, independent of recording jobs and their cleanup.
+
+Shared `youtube-quota/` and `discord-state/` directories live directly under the
+scratch root. Preserve these along with channel queues when upgrading.
 
 Each job directory contains its media, original title and filename metadata,
 captured processing flags, and any retry or success state. Workers scan ready
@@ -217,16 +231,19 @@ The container continuously writes an atomic status manifest to
   "channel": "streamer_name",
   "mode": "twitch",
   "status": "recording",
+  "recorder_heartbeat_at": 1792390500,
   "updated_at": "2026-10-19T06:15:30Z",
   "active_capture": {
     "job_id": "recording.XXXXXXXX",
     "title": "Stream title",
     "author": "streamer_name",
-    "started_at": 1729318530,
+    "started_at": 1792386930,
     "duration_seconds": 3600,
     "duration_human": "01:00:00",
     "size_bytes": 1073741824,
-    "size_human": "1.00 GB"
+    "size_human": "1.00 GB",
+    "last_growth_at": 1792390530,
+    "stalled": false
   },
   "queues": {
     "active": 1,
@@ -244,10 +261,16 @@ The container continuously writes an atomic status manifest to
 }
 ```
 
-- `status`: `offline` (stream not live or monitor stopped), `monitoring` (checking API for stream), or `recording` (active stream capture).
-- `active_capture`: Details of the in-progress stream recording, or `null` when not recording.
+- `status`: `offline` (confirmed offline stream or stopped recorder), `monitoring` (checking the stream API), `recording` (active capture with recent writes), or `error` (API/capture failure, stale monitor heartbeat, or stalled capture). A stale state file alone cannot report a running recorder.
+- `recorder_heartbeat_at`: Last monitor progress timestamp. During a long capture, recent file writes establish recording activity instead of the monitor heartbeat.
+- `active_capture`: Details of an active or stalled recording, or `null` when the recorder is stopped or has no active job. `last_growth_at` is the capture's last write time (the job creation time before the first bytes arrive); `stalled` indicates no writes for `RECORDER_STALE_SECONDS`.
 - `queues`: Real-time job counts across all pipeline stages.
 - `disk_space`: Available gigabytes on the scratch and storage filesystems.
+
+The Docker healthcheck requires the download, normalization, publication, status,
+and notification workers, plus upload/encode workers enabled by their flags, to
+be `RUNNING`. Disabled workers are excluded. Status export runs independently of
+Discord delivery, so slow webhooks cannot stop local status updates.
 
 ### Discord monitor webhook and alerts
 
@@ -260,7 +283,22 @@ Configure notifications using webhook URLs in your environment:
 #### Persistent status message
 
 When `DISCORD_MONITOR_WEBHOOK_URL` is configured, the recorder creates a persistent status embed displaying the current channel status, active recording statistics, queue counts, and storage space.
-The message ID is persisted in `$WORK_DIR/status_message.id` and updated as data changes or on a 30-second interval. If the message is deleted in Discord (HTTP 404), the recorder automatically creates a new message and updates the persisted ID.
+The message ID is persisted in `$WORK_DIR/status_message.id`, with webhook identity
+and retry/update state in `$WORK_DIR/discord-status.json`. The notification worker
+updates it as data changes or on a 30-second interval. If the message is deleted
+in Discord (HTTP 404), the worker creates a new message. Changing the monitor
+webhook creates a status message at the new destination. A primary webhook alone
+never enables the persistent message; it receives public events and, when enabled,
+operational-alert fallback.
+
+Payloads disable mentions and truncate text to Discord's individual and combined
+embed limits. HTTP 429 responses defer requests using Discord's `Retry-After` and
+`retry_after` values, with cooldown state shared by webhook across the scratch
+volume. Other event delivery failures retry with backoff from 30 seconds to
+15 minutes. Pending events survive worker/container restarts. Delivery is at least
+once: a crash after Discord accepts an event but before local cleanup can duplicate
+that alert. Failed events remain in the outbox until delivered or manually removed;
+malformed events are retained as `.invalid` files for inspection.
 
 #### Operational event alerts
 
@@ -269,7 +307,7 @@ Critical events are posted as distinct, separate messages:
 - **Recording completed**: Stream title, duration, and captured size when a recording finishes.
 - **Low disk space**: Warning when available disk space drops below `MIN_FREE_SPACE_GB` (debounced to once every 5 minutes).
 - **Job quarantined**: Alert when a capture fails normalization or integrity verification and requires manual review.
-- **YouTube quota exceeded**: Notification when daily YouTube upload API limits are hit, indicating paused uploads until 08:00 UTC.
+- **YouTube quota exceeded**: Notification when daily YouTube API quota is hit, indicating the next Pacific midnight using a Discord timestamp displayed in each viewer's timezone.
 
 ## Development checks
 

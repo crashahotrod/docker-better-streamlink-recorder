@@ -32,6 +32,7 @@ services:
       # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... # Stream go-live & upload notifications
       # - DISCORD_MONITOR_WEBHOOK_URL=https://discord.com/api/webhooks/... # Separate monitor webhook for persistent status & operational alerts
       # - DISCORD_NOTIFY_ON_ERROR=true # Broadcast operational alerts (recording complete, low disk, quarantine, quota; default true)
+      # - RECORDER_STALE_SECONDS=180 # Error status after monitor/capture inactivity; minimum 150 seconds
       # - TWITCH_USER_TOKEN=yourUserToken # Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
       # - MIN_FREE_SPACE_GB=5 # Guardrail: Minimum free GB required on disk before recording (0=disabled)
       # - RETENTION_DAYS=0 # Auto-prune recordings older than N days from storage (0=disabled)

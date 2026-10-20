@@ -3,47 +3,53 @@ set -uo pipefail
 # shellcheck source=pipeline.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/pipeline.sh"
 
+recorder_running() {
+    [[ -f "$WORK_DIR/download.lock" ]] || return 1
+    # A distinct contention exit code separates a held lock from an I/O error.
+    if flock -n -E 3 "$WORK_DIR/download.lock" true; then return 1; else [[ $? -eq 3 ]]; fi
+}
+
+capture_activity_time() {
+    stat -c %Y "$1/capture.bin" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || printf '0\n'
+}
+
 get_channel_status() {
-    local active_job=""
-    if [[ -f "$WORK_DIR/active.job" ]]; then
-        read -r active_job < "$WORK_DIR/active.job" || active_job=""
-        if [[ -n "$active_job" && -d "$active_job" ]]; then
-            printf 'recording\n'
-            return 0
-        fi
-    fi
-    if [[ -f "$WORK_DIR/channel.status" ]]; then
-        local st=""
-        read -r st < "$WORK_DIR/channel.status" || st=""
-        if [[ "$st" == "recording" || "$st" == "monitoring" || "$st" == "offline" ]]; then
-            if [[ "$st" != "recording" ]]; then
-                printf '%s\n' "$st"
-                return 0
-            fi
-        fi
-    fi
-    # If download.lock is held, download process is active
-    (
-        exec 9< "$WORK_DIR/download.lock"
-        if flock -n 9; then
-            printf 'offline\n'
+    local active_job='' st='' heartbeat=0 now activity stale="${RECORDER_STALE_SECONDS:-180}"
+    recorder_running || { printf 'offline\n'; return 0; }
+    now=$(date +%s)
+    if [[ -f "$WORK_DIR/channel.status" ]]; then read -r st < "$WORK_DIR/channel.status" || st=''; fi
+    if [[ "$st" == recording ]]; then
+        if [[ -f "$WORK_DIR/active.job" ]]; then read -r active_job < "$WORK_DIR/active.job" || active_job=''; fi
+        if [[ "$active_job" == "$WORK_DIR/active/recording."* && -d "$active_job" ]]; then
+            activity=$(capture_activity_time "$active_job")
+            if (( now - activity <= stale )); then printf 'recording\n'; else printf 'error\n'; fi
         else
-            printf 'monitoring\n'
+            printf 'error\n'
         fi
-    ) 2>/dev/null || printf 'offline\n'
+        return 0
+    fi
+    if [[ -f "$WORK_DIR/recorder.heartbeat" ]]; then read -r heartbeat < "$WORK_DIR/recorder.heartbeat" || heartbeat=0; fi
+    [[ "$heartbeat" =~ ^[0-9]+$ ]] || heartbeat=0
+    if (( now - heartbeat > stale )); then
+        printf 'error\n'
+    else
+        case "$st" in offline|monitoring|error) printf '%s\n' "$st" ;; *) printf 'error\n' ;; esac
+    fi
 }
 
 build_status_json() {
-    local now channel_status active_json="null"
+    local now channel_status active_json="null" heartbeat=0
     now=$(date +%s)
     channel_status=$(get_channel_status)
+    if [[ -f "$WORK_DIR/recorder.heartbeat" ]]; then read -r heartbeat < "$WORK_DIR/recorder.heartbeat" || heartbeat=0; fi
+    [[ "$heartbeat" =~ ^[0-9]+$ ]] || heartbeat=0
 
     local active_job=""
     if [[ -f "$WORK_DIR/active.job" ]]; then
         read -r active_job < "$WORK_DIR/active.job" || active_job=""
     fi
 
-    if [[ -n "$active_job" && -d "$active_job" ]]; then
+    if [[ "$channel_status" != offline && "$active_job" == "$WORK_DIR/active/recording."* && -d "$active_job" ]]; then
         local job_id="${active_job##*/}"
         local title="Untitled Stream"
         if [[ -f "$active_job/title" ]]; then
@@ -72,6 +78,9 @@ build_status_json() {
         [[ "$size_bytes" =~ ^[0-9]+$ ]] || size_bytes=0
         local size_human
         size_human=$(format_bytes "$size_bytes")
+        local last_growth_at stalled=false
+        last_growth_at=$(capture_activity_time "$active_job")
+        (( now - last_growth_at <= ${RECORDER_STALE_SECONDS:-180} )) || stalled=true
 
         active_json=$(jq -n \
             --arg job_id "$job_id" \
@@ -82,6 +91,8 @@ build_status_json() {
             --arg duration_human "$duration_human" \
             --argjson size_bytes "$size_bytes" \
             --arg size_human "$size_human" \
+            --argjson last_growth_at "$last_growth_at" \
+            --argjson stalled "$stalled" \
             '{
                 job_id: $job_id,
                 title: $title,
@@ -90,7 +101,9 @@ build_status_json() {
                 duration_seconds: $duration_seconds,
                 duration_human: $duration_human,
                 size_bytes: $size_bytes,
-                size_human: $size_human
+                size_human: $size_human,
+                last_growth_at: $last_growth_at,
+                stalled: $stalled
             }')
     fi
 
@@ -113,6 +126,7 @@ build_status_json() {
         --arg channel "${CHANNEL:-unknown}" \
         --arg mode "${MODE:-unknown}" \
         --arg status "$channel_status" \
+        --argjson heartbeat "$heartbeat" \
         --argjson active_capture "$active_json" \
         --argjson q_active "$q_active" \
         --argjson q_normalize "$q_normalize" \
@@ -127,6 +141,7 @@ build_status_json() {
             channel: $channel,
             mode: $mode,
             status: $status,
+            recorder_heartbeat_at: $heartbeat,
             updated_at: (now | todate),
             active_capture: $active_capture,
             queues: {
@@ -157,184 +172,10 @@ write_status_files() {
     write_state "$work_file" "$json" || true
 }
 
-build_persistent_discord_payload() {
-    local status_json="$1"
-    local channel status updated_at
-    channel=$(jq -r '.channel' <<< "$status_json")
-    status=$(jq -r '.status' <<< "$status_json")
-    updated_at=$(jq -r '.updated_at' <<< "$status_json")
-
-    local status_display color
-    case "$status" in
-        recording)
-            status_display="🔴 Recording"
-            color=15158332
-            ;;
-        monitoring)
-            status_display="🟢 Monitoring"
-            color=3447003
-            ;;
-        *)
-            status_display="⚪ Offline"
-            color=9807270
-            ;;
-    esac
-
-    local fields
-    fields=$(jq -n \
-        --arg status_display "$status_display" \
-        --argjson s "$status_json" \
-        '[
-            {
-                name: "Channel Status",
-                value: $status_display,
-                inline: true
-            },
-            {
-                name: "Platform",
-                value: ($s.mode | ascii_upcase),
-                inline: true
-            },
-            (if $s.active_capture != null then
-                {
-                    name: "Active Recording",
-                    value: ("**Title**: " + $s.active_capture.title + "\n**Duration**: " + $s.active_capture.duration_human + "\n**Current Size**: " + $s.active_capture.size_human),
-                    inline: false
-                }
-            else empty end),
-            {
-                name: "Pipeline Queues",
-                value: ("Active: " + ($s.queues.active | tostring) + " | Normalize: " + ($s.queues.normalize | tostring) + " | Upload: " + ($s.queues.upload | tostring) + "\nEncode: " + ($s.queues.encode | tostring) + " | Publish: " + ($s.queues.publish | tostring) + " | Quarantine: " + ($s.queues.quarantine | tostring)),
-                inline: false
-            },
-            {
-                name: "Disk Space",
-                value: ("Scratch: " + ($s.disk_space.scratch_free_gb | tostring) + " GB | Storage: " + ($s.disk_space.storage_free_gb | tostring) + " GB (Min: " + ($s.disk_space.min_free_space_gb | tostring) + " GB)"),
-                inline: false
-            }
-        ]') || return 1
-
-    jq -n \
-        --arg title "📊 Streamlink Recorder Status: $channel" \
-        --argjson color "$color" \
-        --argjson fields "$fields" \
-        --arg updated "$updated_at" \
-        '{
-            embeds: [{
-                title: $title,
-                color: $color,
-                fields: $fields,
-                footer: { text: ("Last updated: " + $updated) },
-                timestamp: $updated
-            }]
-        }'
-}
-
-update_persistent_discord() {
-    local status_json="$1"
-    local webhook
-    webhook=$(get_monitor_webhook)
-    [[ -n "$webhook" ]] || return 0
-    webhook="${webhook%/}"
-
-    local id_file="$WORK_DIR/status_message.id"
-    local payload
-    payload=$(build_persistent_discord_payload "$status_json") || return 1
-
-    local now msg_id="" http_code response body
-    now=$(date +%s)
-
-    if [[ -f "$id_file" ]]; then
-        read -r msg_id < "$id_file" || msg_id=""
-    fi
-
-    if [[ -n "$msg_id" ]]; then
-        local patch_url="${webhook}/messages/${msg_id}"
-        response=$(curl -s -w '\n%{http_code}' --connect-timeout 10 --max-time 30 -X PATCH \
-            -H 'Content-Type: application/json' --data "$payload" \
-            "$patch_url" 2>/dev/null || printf '\n000')
-        http_code=$(tail -n 1 <<< "$response")
-        if [[ "$http_code" == "200" ]]; then
-            write_state "$WORK_DIR/.last_discord_status_time" "$now"
-            return 0
-        elif [[ "$http_code" == "404" ]]; then
-            printf '[Discord Status] Message %s was deleted (404); recreating persistent status message.\n' "$msg_id" >&2
-            rm -f -- "$id_file"
-            msg_id=""
-        else
-            printf '[Discord Status] Failed to update message %s (HTTP %s).\n' "$msg_id" "$http_code" >&2
-            return 1
-        fi
-    fi
-
-    local post_url
-    if [[ "$webhook" == *\?* ]]; then
-        post_url="${webhook}&wait=true"
-    else
-        post_url="${webhook}?wait=true"
-    fi
-
-    response=$(curl -s -w '\n%{http_code}' --connect-timeout 10 --max-time 30 -X POST \
-        -H 'Content-Type: application/json' --data "$payload" \
-        "$post_url" 2>/dev/null || printf '\n000')
-    http_code=$(tail -n 1 <<< "$response")
-    body=$(sed '$d' <<< "$response")
-
-    if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
-        msg_id=$(jq -r '.id // empty' <<< "$body" 2>/dev/null || true)
-        if [[ -n "$msg_id" ]]; then
-            write_state "$id_file" "$msg_id"
-            write_state "$WORK_DIR/.last_discord_status_time" "$now"
-            printf '[Discord Status] Created persistent status message: %s\n' "$msg_id" >&2
-            return 0
-        fi
-    fi
-
-    printf '[Discord Status] Failed to create persistent status message (HTTP %s).\n' "$http_code" >&2
-    return 1
-}
-
 status_cycle() {
-    local status_json data_fp now last_time=0 last_fp="" time_diff should_update=false
+    local status_json
     status_json=$(build_status_json) || return 1
     write_status_files "$status_json"
-
-    local webhook
-    webhook=$(get_monitor_webhook)
-    [[ -n "$webhook" ]] || return 0
-
-    data_fp=$(jq -c '{
-        status: .status,
-        job: .active_capture.job_id,
-        title: .active_capture.title,
-        queues: .queues,
-        disk: .disk_space
-    }' <<< "$status_json" 2>/dev/null || echo "")
-
-    now=$(date +%s)
-    if [[ -f "$WORK_DIR/.last_discord_status_time" ]]; then
-        read -r last_time < "$WORK_DIR/.last_discord_status_time" || last_time=0
-    fi
-    [[ "$last_time" =~ ^[0-9]+$ ]] || last_time=0
-    time_diff=$((now - last_time))
-
-    if [[ -f "$WORK_DIR/.last_discord_status_fp" ]]; then
-        read -r last_fp < "$WORK_DIR/.last_discord_status_fp" || last_fp=""
-    fi
-
-    if [[ "${STATUS_ONCE:-false}" == true || ! -f "$WORK_DIR/status_message.id" ]]; then
-        should_update=true
-    elif (( time_diff >= 30 )); then
-        should_update=true
-    elif [[ "$data_fp" != "$last_fp" ]] && (( time_diff >= 5 )); then
-        should_update=true
-    fi
-
-    if [[ "$should_update" == true ]]; then
-        if update_persistent_discord "$status_json"; then
-            write_state "$WORK_DIR/.last_discord_status_fp" "$data_fp"
-        fi
-    fi
 }
 
 status_main() {

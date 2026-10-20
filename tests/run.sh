@@ -16,4 +16,5 @@ bash tests/test_download.sh
 bash tests/test_queue.sh
 bash tests/test_startup.sh
 bash tests/test_notifications.sh
+bash tests/test_upload_operations.sh
 bash tests/test_media.sh

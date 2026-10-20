@@ -9,6 +9,8 @@ source "$ROOT/download.sh"
 TEST_ROOT=$(mktemp -d)
 trap 'find "$TEST_ROOT" -depth -delete' EXIT
 export MODE=twitch CHANNEL=monitor CLIENT_ID='client id' CLIENT_SECRET='client secret'
+export SCRATCH_ROOT="$TEST_ROOT/scratch" STORAGE_DIR="$TEST_ROOT/storage"
+pipeline_init
 export TMPDIR="$TEST_ROOT/http"
 mkdir -- "$TMPDIR"
 TOKEN_RESPONSE='{"access_token":"first-token","expires_in":3600}'
@@ -94,6 +96,7 @@ record_stream() { printf '%s\0' "$@" >> "$TEST_ROOT/recordings"; }
 for MODE in twitch kick; do
     FAIL_TOKEN=true
     if monitor_once; then echo 'Failed token accepted by monitor' >&2; exit 1; fi
+    [[ $(cat "$WORK_DIR/channel.status") == error ]]
     FAIL_TOKEN=false API_EXIT=2 TOKEN_EXPIRES_AT=9999999999
     if monitor_once; then exit 1; fi
     [[ "$TOKEN_EXPIRES_AT" -eq 0 ]]
@@ -102,6 +105,7 @@ for MODE in twitch kick; do
     [[ "$TOKEN_EXPIRES_AT" -eq 9999999999 ]]
     API_EXIT=0 API_RESPONSE='{"data":[]}'
     monitor_once
+    [[ $(cat "$WORK_DIR/channel.status") == offline ]]
     if [[ "$MODE" == kick ]]; then
         API_RESPONSE='{"data":[{"stream":{"is_live":false}}]}'
         monitor_once
@@ -110,6 +114,10 @@ for MODE in twitch kick; do
     if monitor_once 2>/dev/null; then echo 'Invalid JSON accepted' >&2; exit 1; fi
 done
 [[ ! -e "$TEST_ROOT/recordings" ]]
+for API_RESPONSE in '{"data":null}' '{"data":{}}' '{"data":[{}]}'; do
+    if monitor_once 2>/dev/null; then echo 'Malformed API schema accepted' >&2; exit 1; fi
+    [[ $(cat "$WORK_DIR/channel.status") == error ]]
+done
 MODE=twitch API_RESPONSE='{"data":[{"title":"quote \" and\nnewline","user_name":"Author","id":"123"}]}'
 monitor_once
 mapfile -d '' -t recorded < "$TEST_ROOT/recordings"
@@ -148,4 +156,9 @@ for arg in "${STREAMLINK_ARGS[@]}"; do
 done
 [[ "$has_restart" -eq 1 && "$threads" -eq 1 ]]
 unset STREAMLINK_EXTRA_ARGS
+# Capture errors must propagate to the monitor and remain visible as errors.
+MODE=twitch API_RESPONSE='{"data":[{"title":"title","user_name":"Author","id":"123"}]}'
+record_stream() { return 1; }
+if monitor_once; then echo 'Failed recording accepted by monitor' >&2; exit 1; fi
+[[ $(cat "$WORK_DIR/channel.status") == error ]]
 printf 'PASS: token requests/cache, HTTP errors, offline/live decisions, splitting, authentication, and extra args\n'

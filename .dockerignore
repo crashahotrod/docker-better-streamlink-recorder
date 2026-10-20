@@ -8,6 +8,9 @@
 !normalize.sh
 !recover.sh
 !media.py
+!notifications.py
+!operations.py
+!healthcheck.py
 !encode.sh
 !upload.sh
 !status.sh

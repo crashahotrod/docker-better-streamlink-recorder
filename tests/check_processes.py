@@ -2,7 +2,7 @@
 import os
 import pathlib
 
-expected = {'download': True, 'publish': True, 'normalize': True,
+expected = {'download': True, 'publish': True, 'normalize': True, 'status': True, 'notify': True,
             'upload': os.environ['UPLOAD'] == 'true',
             'encode': os.environ['ENCODE'] == 'true'}
 arguments = []
@@ -12,6 +12,7 @@ for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
     except (FileNotFoundError, ProcessLookupError, PermissionError):
         pass
 for worker, enabled in expected.items():
-    command = f'/etc/streamlink/tools/{worker}.sh'.encode()
+    command = ('/etc/streamlink/tools/notifications.py' if worker == 'notify'
+               else f'/etc/streamlink/tools/{worker}.sh').encode()
     running = any(command in args for args in arguments)
     assert running == enabled, f'{worker}: expected {enabled}, running {running}'

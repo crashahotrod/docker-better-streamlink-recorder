@@ -63,7 +63,8 @@ build_streamlink_args() {
 
 set_channel_status() {
     [[ -n "${WORK_DIR:-}" ]] || return 0
-    write_state "$WORK_DIR/channel.status" "$1"
+    write_state "$WORK_DIR/channel.status" "$1" &&
+        write_state "$WORK_DIR/recorder.heartbeat" "$(date +%s)"
 }
 
 record_stream() {
@@ -104,18 +105,18 @@ record_stream() {
     }
 }
 
-monitor_once() {
+check_stream() {
     local json live title author stream_id status started
-    refresh_token || { set_channel_status "offline"; return 1; }
+    refresh_token || return 1
     if json=$(fetch_stream_info); then
         :
     else
         status=$?
         # Invalidate in the parent shell, not fetch_stream_info's substitution.
         [[ "$status" != 2 ]] || TOKEN_EXPIRES_AT=0
-        set_channel_status "offline"
         return 1
     fi
+    jq -e '.data | type == "array"' <<< "$json" > /dev/null || return 1
     if [[ "$MODE" == twitch ]]; then
         live=$(jq -er '.data | length' <<< "$json") || return 1
         if [[ "$live" == 0 ]]; then
@@ -126,7 +127,8 @@ monitor_once() {
             author=$(jq -er '.data[0].user_name' <<< "$json") &&
             stream_id=$(jq -er '.data[0].id' <<< "$json") || return 1
     else
-        live=$(jq -r '.data[0].stream.is_live // false' <<< "$json") || return 1
+        live=$(jq -r 'if (.data | length) == 0 then false else .data[0].stream.is_live end | select(type == "boolean")' <<< "$json") || return 1
+        [[ "$live" == true || "$live" == false ]] || return 1
         if [[ "$live" != true ]]; then
             set_channel_status "offline"
             return 0
@@ -137,8 +139,15 @@ monitor_once() {
             stream_id=$(date -d "$started" +%s) || return 1
     fi
     set_channel_status "recording"
-    record_stream "$title" "$author" "$stream_id"
+    record_stream "$title" "$author" "$stream_id" || return 1
     set_channel_status "monitoring"
+}
+
+monitor_once() {
+    set_channel_status "monitoring"
+    if check_stream; then return 0; fi
+    set_channel_status "error"
+    return 1
 }
 
 download_main() {
@@ -146,6 +155,8 @@ download_main() {
     # One monitor owns active recordings per channel.
     exec 9> "$WORK_DIR/download.lock"
     flock -n 9 || return 1
+    # Old jobs remain available for recovery, but cannot describe this monitor.
+    rm -f -- "$WORK_DIR/active.job"
     set_channel_status "monitoring"
     while true; do
         recover_completed_recordings

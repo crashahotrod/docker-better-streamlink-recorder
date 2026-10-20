@@ -31,8 +31,11 @@ printf 'preserved' > "$RECORDING_JOB/media.ts"
 SH
 # Reinitialization preserves pending media and repairs ownership on new paths.
 prepare_directories
-for stage in active normalize quarantine upload encode publish; do
+for stage in active normalize quarantine upload encode publish notifications; do
     gosu "$USER_NAME" test -w "$WORK_DIR/$stage"
+done
+for shared in youtube-quota discord-state; do
+    gosu "$USER_NAME" test -w "$SCRATCH_ROOT/$shared"
 done
 [[ $(find "$WORK_DIR/active" -name media.ts -exec cat {} \;) == preserved ]]
 UPLOAD=true

@@ -7,15 +7,28 @@ invoke_uploader() {
     timeout --signal=TERM --kill-after=30s 6h "${YOUTUBEUPLOADER_BIN:-/etc/youtubeuploader}" "$@"
 }
 
-upload_job() {
+upload_job() (
     local job="$1" id input title recorded_date encode count part_title
-    local uploader_output video_id video_url notify_msg now reset_time wait_hours
+    local uploader_output video_id video_url notify_msg now reset_time wait_hours quota_key quota_file retry_at=0
+    quota_key=$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/operations.py" quota-key \
+        "${CONFIG_DIR:-/config}/youtubeuploader_client_secrets.json") || return 1
+    quota_file="${SCRATCH_ROOT:-/etc/streamlink/scratch}/youtube-quota/$quota_key.retry-at"
+    # Serialize clients across channel workers sharing the persistent scratch root.
+    exec 7> "$quota_file.lock"
+    flock -n 7 || return 1
     ensure_normalized_job "$job" || return 1
     read_field "$job/title" title && read -r recorded_date < "$job/recorded-date" || return 1
     count=$(jq '.parts | length' "$job/normalized.json") || return 1
     while IFS= read -r id; do
         input=$(part_file "$job" "$id") || return 1
         if [[ -f "$job/parts/$id.uploaded" ]]; then continue; fi
+        if [[ -f "$quota_file" ]]; then read -r retry_at < "$quota_file" || retry_at=0; fi
+        [[ "$retry_at" =~ ^[0-9]+$ ]] || retry_at=0
+        now=$(date +%s)
+        if (( retry_at > now )); then
+            write_state "$job/upload.retry-at" "$retry_at"
+            return 1
+        fi
         part_title="$recorded_date - $title"
         if (( count > 1 )); then part_title="$part_title - part $id"; fi
         local -a uploader_args=(
@@ -42,14 +55,12 @@ upload_job() {
             if grep -q 'quotaExceeded' "$uploader_output"; then
                 rm -f "$uploader_output"
                 now=$(date +%s)
-                reset_time=$(date -u -d "08:00" +%s 2>/dev/null || echo 0)
+                reset_time=$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/operations.py" quota-reset "$now") || return 1
                 if [[ "$reset_time" =~ ^[0-9]+$ ]] && (( reset_time > 0 )); then
-                    if (( reset_time <= now )); then
-                        reset_time=$((reset_time + 86400))
-                    fi
-                    write_state "$job/upload.retry-at" "$reset_time"
+                    write_state "$quota_file" "$reset_time" &&
+                        write_state "$job/upload.retry-at" "$reset_time" || return 1
                     wait_hours=$(( (reset_time - now) / 3600 ))
-                    printf '[Upload] YouTube API quota exceeded; backing off until 08:00 UTC (~%dh)\n' "$wait_hours" >&2
+                    printf '[Upload] YouTube API quota exceeded; client paused until midnight Pacific (~%dh)\n' "$wait_hours" >&2
                     notify_youtube_quota_exceeded "$wait_hours" "$reset_time" || true
                 fi
             else
@@ -58,6 +69,8 @@ upload_job() {
             log_failure 'Upload failed; capture and per-part receipts retained' "$job"
             return 1
         fi
+        # A notification or logging failure must never delay the success receipt.
+        write_state "$job/parts/$id.uploaded" true || { rm -f "$uploader_output"; return 1; }
         cat "$uploader_output"
         rm -f "$uploader_output"
         video_id=''
@@ -78,12 +91,11 @@ upload_job() {
                 notify_discord "$notify_msg" || true
             fi
         fi
-        write_state "$job/parts/$id.uploaded" true || return 1
         printf '[Upload] Part %s completed: %q\n' "$id" "$job"
     done < <(part_ids "$job")
     read -r encode < "$job/encode-required" || return 1
     if [[ "$encode" == true ]]; then advance_job "$job" encode; else advance_job "$job" publish; fi
-}
+)
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     run_worker upload upload_job

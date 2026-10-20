@@ -50,7 +50,7 @@ source /etc/streamlink/tools/pipeline.sh
 pipeline_init
 new_recording_job smoke test 1
 printf 'preserve across restart' > "$RECORDING_JOB/media.ts"
-for stage in active normalize quarantine upload encode publish; do [[ -w "$WORK_DIR/$stage" ]]; done
+for stage in active normalize quarantine upload encode publish notifications; do [[ -w "$WORK_DIR/$stage" ]]; done
 /usr/bin/python3 - <<'PY'
 import os
 from supervisor.options import ServerOptions
@@ -60,6 +60,7 @@ programs = {p.name: p.autostart for g in options.process_group_configs for p in 
 assert programs['streamlink_upload'] == (os.environ['UPLOAD'] == 'true')
 assert programs['streamlink_encode'] == (os.environ['ENCODE'] == 'true')
 assert programs['streamlink_download'] and programs['streamlink_publish'] and programs['streamlink_normalize']
+assert programs['streamlink_status'] and programs['streamlink_notify']
 PY
 SH
     done
@@ -99,13 +100,23 @@ for mode in twitch kick; do
                 --mount "type=bind,source=$SOURCE_ROOT,target=/project,readonly" "$IMAGE")
             ready=false
             for ((i=0; i<20; i++)); do
-                if docker exec "$container_id" /usr/bin/python3 /project/tests/check_processes.py 2>/dev/null; then
+                if docker exec "$container_id" /usr/bin/python3 /project/tests/check_processes.py 2>/dev/null &&
+                    docker exec "$container_id" python3 /etc/streamlink/tools/healthcheck.py; then
                     ready=true
                     break
                 fi
                 sleep 1
             done
-            if [[ "$ready" != true ]]; then docker logs "$container_id"; exit 1; fi
+            if [[ "$ready" != true ]]; then
+                docker logs "$container_id"
+                docker exec "$container_id" supervisorctl status || true
+                exit 1
+            fi
+            # Required worker failures must fail health even while other workers run.
+            docker exec "$container_id" supervisorctl stop streamlink_download > /dev/null
+            if docker exec "$container_id" python3 /etc/streamlink/tools/healthcheck.py; then
+                echo 'Healthcheck accepted stopped recorder' >&2; exit 1
+            fi
             docker stop --time 10 "$container_id" > /dev/null
             container_id=''
         done

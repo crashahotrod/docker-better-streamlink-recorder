@@ -4,7 +4,9 @@
 pipeline_init() {
     WORK_DIR="${SCRATCH_ROOT:-/etc/streamlink/scratch}/${MODE:?}/${CHANNEL:?}/queue-v2"
     STORAGE_DIR="${STORAGE_DIR:-/storage}"
-    mkdir -p -- "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish} || return 1
+    mkdir -p -- "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish,notifications} \
+        "${SCRATCH_ROOT:-/etc/streamlink/scratch}/youtube-quota" \
+        "${SCRATCH_ROOT:-/etc/streamlink/scratch}/discord-state" || return 1
 }
 
 log_failure() {
@@ -67,6 +69,14 @@ get_monitor_webhook() {
     fi
 }
 
+queue_discord() {
+    # Only local, atomic outbox writes happen in recording/processing workers.
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/notifications.py" enqueue "$1" <<< "$2" || {
+        echo '[Discord] Could not queue notification; application work will continue.' >&2
+        return 1
+    }
+}
+
 notify_monitor_alert() {
     local title="$1" message="$2" color="${3:-15105570}" fields_json="${4:-[]}"
     if [[ "${DISCORD_NOTIFY_ON_ERROR:-true}" == false ]]; then
@@ -96,13 +106,7 @@ notify_monitor_alert() {
             }]
         }') || return 1
 
-    if ! curl -fsS --connect-timeout 10 --max-time 30 -X POST \
-        -H 'Content-Type: application/json' --data "$payload" \
-        "$webhook" > /dev/null 2>&1; then
-        echo '[Discord Alert] Notification failed; continuing operations.' >&2
-        return 1
-    fi
-    return 0
+    queue_discord monitor "$payload"
 }
 
 notify_recording_completed() {
@@ -206,16 +210,15 @@ notify_youtube_quota_exceeded() {
     fields=$(jq -n \
         --arg channel "${CHANNEL:-unknown}" \
         --arg wait "~${wait_hours} hours" \
-        --arg reset "08:00 UTC" \
         --argjson reset_epoch "$reset_time" \
         '[
             {name: "Channel", value: $channel, inline: true},
             {name: "Backoff Duration", value: $wait, inline: true},
-            {name: "Uploads Resume", value: $reset, inline: true}
+            {name: "Uploads Resume", value: ("<t:" + ($reset_epoch | tostring) + ":F> (midnight Pacific)"), inline: true}
         ]')
 
     notify_monitor_alert "🛑 YouTube API Quota Exceeded" \
-        "Daily upload limit reached. YouTube uploads are paused until quota reset at 08:00 UTC." \
+        "Daily API quota reached. Uploads sharing this YouTube client are paused until midnight Pacific." \
         10181046 "$fields"
 }
 
@@ -244,12 +247,7 @@ notify_discord() {
     else
         payload=$(jq -n --arg content "$message" '{content: $content}') || return 1
     fi
-    if ! curl -fsS --connect-timeout 10 --max-time 30 -X POST \
-        -H 'Content-Type: application/json' --data "$payload" \
-        "$DISCORD_WEBHOOK_URL" > /dev/null 2>&1; then
-        echo '[Discord] Notification failed; recording will continue.' >&2
-        return 1
-    fi
+    queue_discord public "$payload"
 }
 
 prune_old_recordings() {

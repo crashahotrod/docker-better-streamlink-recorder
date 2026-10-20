@@ -50,6 +50,12 @@ validate_environment() {
             errors=1
         fi
     fi
+    value="${RECORDER_STALE_SECONDS:-180}"
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]] || (( value < 150 )); then
+        echo 'ERROR: RECORDER_STALE_SECONDS must be an integer of at least 150 seconds.' >&2
+        errors=1
+    fi
+    export RECORDER_STALE_SECONDS="$value"
     (( errors == 0 ))
 }
 
@@ -62,7 +68,9 @@ prepare_directories() {
     chown -R "$USER_NAME:$USER_NAME" "${CONFIG_DIR:-/config}" "$STORAGE_DIR" \
         "${SCRATCH_ROOT:-/etc/streamlink/scratch}" \
         "${LOG_DIR:-/var/log/streamlink}" "${DBUS_RUN_DIR:-/var/run/dbus}"
-    for directory in "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish} "$STORAGE_DIR" "${CONFIG_DIR:-/config}"; do
+    for directory in "$WORK_DIR"/{active,normalize,quarantine,upload,encode,publish,notifications} \
+        "${SCRATCH_ROOT:-/etc/streamlink/scratch}/youtube-quota" \
+        "${SCRATCH_ROOT:-/etc/streamlink/scratch}/discord-state" "$STORAGE_DIR" "${CONFIG_DIR:-/config}"; do
         probe=$(gosu "$USER_NAME" mktemp "$directory/.write-test.XXXXXXXX") || {
             printf 'ERROR: Directory is not writable by %s: %s\n' "$USER_NAME" "$directory" >&2
             return 1

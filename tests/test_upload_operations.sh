@@ -33,6 +33,9 @@ invoke_uploader() {
     local previous='' arg
     for arg in "$@"; do
         if [[ "$previous" == -title ]]; then printf '%s' "$arg" > "$TEST_ROOT/last_title"; fi
+        if [[ "$previous" == -description ]]; then printf '%s' "$arg" > "$TEST_ROOT/last_description"; fi
+        if [[ "$previous" == -tags ]]; then printf '%s' "$arg" > "$TEST_ROOT/last_tags"; fi
+        if [[ "$previous" == -thumbnail ]]; then printf '%s' "$arg" > "$TEST_ROOT/last_thumbnail"; fi
         previous="$arg"
     done
     if [[ "${FAIL_QUOTA:-false}" == true ]]; then printf '%s' "${QUOTA_ERROR:-quotaExceeded}"; return 1; fi
@@ -105,4 +108,17 @@ pipeline_init
 new_upload
 if upload_job "$JOB"; then echo 'Upload count cooldown not shared' >&2; exit 1; fi
 [[ $(wc -c < "$TEST_ROOT/attempts") -eq "$calls" && $(cat "$JOB/upload.retry-at") -eq "$deadline" ]]
+# Templated description and tags placeholder expansion, and thumbnail argument
+TEST_NOW=$((deadline + 1))
+FAIL_QUOTA=false
+new_upload
+CURRENT_JOB="$JOB"
+export YOUTUBE_DESCRIPTION='Channel: {channel} | Stream: {stream_url} | Part: {part}/{count} | Title: {title}'
+export YOUTUBE_TAGS='{channel},{mode},part-{part}'
+printf thumb_data > "$JOB/parts/0001.thumbnail.jpg"
+upload_job "$JOB"
+[[ $(cat "$TEST_ROOT/last_description") == "Channel: three | Stream: https://twitch.tv/three | Part: 0001/1 | Title: Test upload" ]]
+[[ $(cat "$TEST_ROOT/last_tags") == "three,twitch,part-0001" ]]
+[[ $(cat "$TEST_ROOT/last_thumbnail") == "$JOB/parts/0001.thumbnail.jpg" ]]
+unset YOUTUBE_DESCRIPTION YOUTUBE_TAGS
 printf 'PASS: receipt before notifications and persistent quota pause shared across channels\n'

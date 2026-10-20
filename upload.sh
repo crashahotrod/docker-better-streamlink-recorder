@@ -7,8 +7,34 @@ invoke_uploader() {
     timeout --signal=TERM --kill-after=30s 6h "${YOUTUBEUPLOADER_BIN:-/etc/youtubeuploader}" "$@"
 }
 
+format_youtube_template() {
+    local template="$1" part_title="$2" id="$3" count="$4" segment="${5:-}"
+    python3 - "$template" "$CHANNEL" "$MODE" "$title" "$recorded_date" "$part_title" \
+        "$id" "$count" "$segment" "${UPLOAD_BOT_NAME:-}" <<'PY'
+import sys
+
+template, channel, mode, title, date, part_title, part, count, segment, bot = sys.argv[1:]
+stream_url = f"https://twitch.tv/{channel}" if mode == "twitch" else f"https://kick.com/{channel}"
+part_label = segment if segment else part
+context = {
+    'channel': channel,
+    'mode': mode,
+    'title': title,
+    'date': date,
+    'part_title': part_title,
+    'part': part_label,
+    'count': count,
+    'stream_url': stream_url,
+    'bot_name': bot,
+}
+for key, value in context.items():
+    template = template.replace(f'{{{key}}}', str(value))
+print(template, end='')
+PY
+}
+
 upload_job() (
-    local job="$1" id input title recorded_date encode count part_title segment
+    local job="$1" id input title recorded_date encode count part_title segment=''
     local uploader_output video_id video_url notify_msg now reset_time wait_hours quota_key quota_file retry_at=0
     quota_key=$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/operations.py" quota-key \
         "${CONFIG_DIR:-/config}/youtubeuploader_client_secrets.json") || return 1
@@ -45,20 +71,37 @@ PY
         elif (( count > 1 )); then
             part_title="$part_title - part $id"
         fi
+        local raw_description final_description final_tags
+        raw_description="${YOUTUBE_DESCRIPTION:-Uploaded Automatically by ${UPLOAD_BOT_NAME:?}}"
+        final_description=$(format_youtube_template "$raw_description" "$part_title" "$id" "$count" "$segment") || final_description="$raw_description"
+
+        local thumbnail="$job/parts/$id.thumbnail.jpg"
+        if [[ ! -s "$thumbnail" ]]; then
+            local thumb_time="${YOUTUBE_THUMBNAIL_TIMESTAMP:-00:01:00}"
+            ffmpeg -nostdin -y -v error -ss "$thumb_time" -i "$input" -vframes 1 -q:v 2 "$thumbnail" 2>/dev/null || true
+            if [[ ! -s "$thumbnail" ]]; then
+                ffmpeg -nostdin -y -v error -i "$input" -vframes 1 -q:v 2 "$thumbnail" 2>/dev/null || true
+            fi
+        fi
+
         local -a uploader_args=(
             -title "$part_title"
             -privacy "${YOUTUBE_PRIVACY:-public}"
             -filename "$input"
-            -description "${YOUTUBE_DESCRIPTION:-Uploaded Automatically by ${UPLOAD_BOT_NAME:?}}"
+            -description "$final_description"
             -secrets "${CONFIG_DIR:-/config}/youtubeuploader_client_secrets.json"
             -cache "${CONFIG_DIR:-/config}/youtubeuploader_request.token"
             -metaJSONout "$job/parts/$id.remote.json"
         )
+        if [[ -s "$thumbnail" ]]; then
+            uploader_args+=(-thumbnail "$thumbnail")
+        fi
         if [[ -n "${YOUTUBE_PLAYLIST_ID:-}" ]]; then
             uploader_args+=(-playlistID "$YOUTUBE_PLAYLIST_ID")
         fi
         if [[ -n "${YOUTUBE_TAGS:-}" ]]; then
-            uploader_args+=(-tags "$YOUTUBE_TAGS")
+            final_tags=$(format_youtube_template "$YOUTUBE_TAGS" "$part_title" "$id" "$count" "$segment") || final_tags="$YOUTUBE_TAGS"
+            uploader_args+=(-tags "$final_tags")
         fi
         if [[ -n "${YOUTUBE_CATEGORY_ID:-}" ]]; then
             uploader_args+=(-categoryId "$YOUTUBE_CATEGORY_ID")

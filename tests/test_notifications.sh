@@ -49,7 +49,14 @@ exec 9> "$WORK_DIR/download.lock"
 flock -n 9
 [[ $(get_channel_status) == recording ]]
 json=$(build_status_json)
-jq -e '.active_capture.stalled == false and .active_capture.last_growth_at > 0' <<< "$json" > /dev/null
+jq -e '.active_capture.stalled == false and .active_capture.last_growth_at > 0 and .active_capture.segment_index == null' <<< "$json" > /dev/null
+# Segmented stream status tracks child segment and overall broadcast duration.
+printf '2\n' > "$RECORDING_JOB/segment-index"
+printf 'parent123\n' > "$RECORDING_JOB/segment-parent"
+mkdir -p "$WORK_DIR/sessions/recording.parent123"
+printf '%s\n' "$(( $(date +%s) - 3600 ))" > "$WORK_DIR/sessions/recording.parent123/started-at"
+json=$(build_status_json)
+jq -e '.active_capture.segment_index == 2 and .active_capture.total_duration_seconds >= 3600 and (.active_capture.total_duration_human | test("^[0-9]{2}:[0-9]{2}:[0-9]{2}$"))' <<< "$json" > /dev/null
 # No capture growth for longer than the threshold is an error.
 touch -d '10 minutes ago' "$RECORDING_JOB/capture.bin"
 [[ $(get_channel_status) == error ]]

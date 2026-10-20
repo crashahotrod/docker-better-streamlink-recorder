@@ -82,6 +82,24 @@ build_status_json() {
         last_growth_at=$(capture_activity_time "$active_job")
         (( now - last_growth_at <= ${RECORDER_STALE_SECONDS:-180} )) || stalled=true
 
+        local segment_index=0 total_duration_seconds=0 total_duration_human="" parent_id=""
+        if [[ -f "$active_job/segment-index" ]]; then
+            read -r segment_index < "$active_job/segment-index" || segment_index=0
+            [[ "$segment_index" =~ ^[0-9]+$ ]] || segment_index=0
+        fi
+        if [[ -f "$active_job/segment-parent" ]]; then
+            read -r parent_id < "$active_job/segment-parent" || parent_id=""
+            if [[ -n "$parent_id" && -f "$WORK_DIR/sessions/recording.$parent_id/started-at" ]]; then
+                local session_started=0
+                read -r session_started < "$WORK_DIR/sessions/recording.$parent_id/started-at" || session_started=0
+                if [[ "$session_started" =~ ^[0-9]+$ ]] && (( session_started > 0 )); then
+                    total_duration_seconds=$((now - session_started))
+                    (( total_duration_seconds >= 0 )) || total_duration_seconds=0
+                    total_duration_human=$(format_duration "$total_duration_seconds")
+                fi
+            fi
+        fi
+
         active_json=$(jq -n \
             --arg job_id "$job_id" \
             --arg title "$title" \
@@ -93,6 +111,9 @@ build_status_json() {
             --arg size_human "$size_human" \
             --argjson last_growth_at "$last_growth_at" \
             --argjson stalled "$stalled" \
+            --argjson segment_index "$segment_index" \
+            --argjson total_duration_seconds "$total_duration_seconds" \
+            --arg total_duration_human "$total_duration_human" \
             '{
                 job_id: $job_id,
                 title: $title,
@@ -103,7 +124,10 @@ build_status_json() {
                 size_bytes: $size_bytes,
                 size_human: $size_human,
                 last_growth_at: $last_growth_at,
-                stalled: $stalled
+                stalled: $stalled,
+                segment_index: (if $segment_index > 0 then $segment_index else null end),
+                total_duration_seconds: (if $total_duration_seconds > 0 then $total_duration_seconds else null end),
+                total_duration_human: (if $total_duration_human != "" then $total_duration_human else null end)
             }')
     fi
 

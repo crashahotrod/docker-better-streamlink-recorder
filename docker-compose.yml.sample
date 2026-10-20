@@ -33,13 +33,16 @@ services:
       # - YOUTUBE_SPLITTING=false
       # - YOUTUBE_SEGMENT_SECONDS=21600 # Continuous segment target: 6 hours; range 1-42900 seconds
       # - YOUTUBE_PLAYLIST_ID= # Playlist ID to append uploaded videos to
-      # - YOUTUBE_TAGS= # Comma-separated tags, e.g. gaming,stream,vod
+      # - YOUTUBE_TAGS= # Comma-separated tags, e.g. gaming,stream,vod. Supports {channel}, {mode}, {part}
       # - YOUTUBE_CATEGORY_ID= # e.g. 20 for Gaming
-      # - YOUTUBE_DESCRIPTION= # Custom description template
+      # - YOUTUBE_DESCRIPTION= # Custom description template: {channel}, {mode}, {title}, {date}, {part}, {stream_url}
+      # - YOUTUBE_THUMBNAIL_TIMESTAMP=00:01:00 # Frame extraction timestamp for automatic video thumbnail
       # Optional notifications & monitoring
       # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... # Stream go-live & upload notifications
       # - DISCORD_MONITOR_WEBHOOK_URL=https://discord.com/api/webhooks/... # Separate monitor webhook for persistent status & operational alerts
       # - DISCORD_NOTIFY_ON_ERROR=true # Broadcast operational alerts (recording complete, low disk, quarantine, quota; default true)
+      # - DISCORD_USERNAME= # Optional webhook username override (defaults to "Streamlink (<channel>)")
+      # - DISCORD_AVATAR_URL= # Optional webhook avatar image URL
       # - RECORDER_STALE_SECONDS=180 # Error status after monitor/capture inactivity; minimum 150 seconds
       # - TWITCH_USER_TOKEN=yourUserToken # Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
       # - MIN_FREE_SPACE_GB=5 # Guardrail: Minimum free GB required on disk before recording (0=disabled)

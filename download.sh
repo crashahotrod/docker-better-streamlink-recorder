@@ -47,7 +47,7 @@ fetch_stream_info() {
 }
 
 build_streamlink_args() {
-    STREAMLINK_ARGS=(--retry-streams 30 --loglevel info --webbrowser true --webbrowser-headless true)
+    STREAMLINK_ARGS=(--retry-streams 30 --retry-open 5 --stream-timeout 60 --loglevel info --webbrowser true --webbrowser-headless true)
     if [[ "$MODE" == twitch && -n "${TWITCH_USER_TOKEN:-}" ]]; then
         STREAMLINK_ARGS+=(--twitch-force-client-integrity --twitch-api-header "Authorization=OAuth $TWITCH_USER_TOKEN")
     fi

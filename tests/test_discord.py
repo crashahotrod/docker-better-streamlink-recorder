@@ -191,6 +191,47 @@ class DiscordTests(unittest.TestCase):
         self.assertEqual('\u200b', field['name'])
         self.assertEqual('\u200b', field['value'])
 
+    def test_webhook_attribution_and_segmented_status_duration(self):
+        # Default attribution from CHANNEL
+        self.env['CHANNEL'] = 'gamer'
+        self.env['DISCORD_AVATAR_URL'] = 'https://img.test/pic.png'
+        self.worker.request(self.env['DISCORD_WEBHOOK_URL'], {'content': 'hello'})
+        sent = json.loads(self.open.call_args.args[0].data)
+        self.assertEqual('Streamlink (gamer)', sent.get('username'))
+        self.assertEqual('https://img.test/pic.png', sent.get('avatar_url'))
+
+        # Explicit DISCORD_USERNAME override
+        self.env['DISCORD_USERNAME'] = 'Custom Recorder'
+        self.worker.request(self.env['DISCORD_WEBHOOK_URL'], {'content': 'hello2'})
+        sent2 = json.loads(self.open.call_args.args[0].data)
+        self.assertEqual('Custom Recorder', sent2.get('username'))
+
+        # PATCH messages never include username or avatar_url
+        self.worker.request(self.env['DISCORD_WEBHOOK_URL'], {'content': 'patch'}, message_id='msg-1')
+        sent3 = json.loads(self.open.call_args.args[0].data)
+        self.assertNotIn('username', sent3)
+        self.assertNotIn('avatar_url', sent3)
+
+        # Segmented status payload displays segment index and total duration
+        status = {
+            'channel': 'gamer',
+            'mode': 'twitch',
+            'status': 'recording',
+            'updated_at': '2026-10-20T00:00:00Z',
+            'active_capture': {
+                'title': 'Speedrun',
+                'duration_human': '01:00:00',
+                'size_human': '1 GB',
+                'segment_index': 3,
+                'total_duration_human': '03:15:00',
+            },
+            'queues': {'active': 1},
+            'disk_space': {'scratch_free_gb': 10, 'storage_free_gb': 20, 'min_free_space_gb': 5}
+        }
+        payload = discord.status_payload(status)
+        active_field = next(f for f in payload['embeds'][0]['fields'] if f['name'] == 'Active Recording')
+        self.assertIn('**Duration**: 01:00:00 (Part 3) | Total: 03:15:00', active_field['value'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

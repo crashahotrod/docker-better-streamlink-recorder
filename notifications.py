@@ -38,18 +38,40 @@ def read_json(path, default):
 
 @contextlib.contextmanager
 def lock(path):
-    import fcntl
     pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'a') as handle:
+        acquired = False
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            import fcntl
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except BlockingIOError:
+                pass
+        except ImportError:
+            try:
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                acquired = True
+            except (ImportError, OSError):
+                pass
+        if not acquired:
             yield False
         else:
             try:
                 yield True
             finally:
-                fcntl.flock(handle, fcntl.LOCK_UN)
+                try:
+                    import fcntl
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+                except (ImportError, OSError):
+                    try:
+                        import msvcrt
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (ImportError, OSError):
+                        pass
 
 
 def clip(value, limit):
@@ -62,6 +84,10 @@ def sanitize(payload):
     payload['allowed_mentions'] = {'parse': []}
     if 'content' in payload:
         payload['content'] = clip(payload['content'], 2000)
+    if 'username' in payload and payload['username']:
+        payload['username'] = clip(payload['username'], 80)
+    if 'avatar_url' in payload and payload['avatar_url']:
+        payload['avatar_url'] = str(payload['avatar_url'])[:2048]
     budget = 6000
 
     def text(value, maximum):
@@ -141,8 +167,13 @@ def status_payload(status):
               {'name': 'Platform', 'value': status['mode'].upper(), 'inline': True}]
     active = status.get('active_capture')
     if active:
+        duration_desc = active['duration_human']
+        if active.get('segment_index'):
+            duration_desc += f" (Part {active['segment_index']})"
+            if active.get('total_duration_human'):
+                duration_desc += f" | Total: {active['total_duration_human']}"
         fields.append({'name': 'Active Recording', 'value':
-                       f"**Title**: {active['title']}\n**Duration**: {active['duration_human']}\n"
+                       f"**Title**: {active['title']}\n**Duration**: {duration_desc}\n"
                        f"**Current Size**: {active['size_human']}", 'inline': False})
     queues = status['queues']
     fields.append({'name': 'Pipeline Queues', 'value': ' | '.join(
@@ -181,8 +212,17 @@ class Worker:
             retry_at = read_json(rate_file, {}).get('retry_at', 0)
             if retry_at > self.now():
                 return 0, {}, retry_at
+            out_payload = dict(payload)
+            if not message_id:
+                channel = self.environ.get('CHANNEL')
+                username = self.environ.get('DISCORD_USERNAME') or (f"Streamlink ({channel})" if channel else None)
+                avatar_url = self.environ.get('DISCORD_AVATAR_URL')
+                if username and 'username' not in out_payload:
+                    out_payload['username'] = username
+                if avatar_url and 'avatar_url' not in out_payload:
+                    out_payload['avatar_url'] = avatar_url
             request = urllib.request.Request(webhook_url(webhook, message_id),
-                data=json.dumps(sanitize(payload)).encode(),
+                data=json.dumps(sanitize(out_payload)).encode(),
                 headers={'Content-Type': 'application/json', 'User-Agent': 'StreamlinkRecorder/1.0'},
                 method='PATCH' if message_id else 'POST')
             try:

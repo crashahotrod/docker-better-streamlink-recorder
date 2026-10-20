@@ -97,7 +97,12 @@ class QuarantineTests(unittest.TestCase):
             outside = root / 'another-channel'
             outside.mkdir()
             (outside / 'capture.bin').write_bytes(b'other channel')
-            (quarantine / 'recording.symlink').symlink_to(outside, target_is_directory=True)
+            has_symlink = False
+            try:
+                (quarantine / 'recording.symlink').symlink_to(outside, target_is_directory=True)
+                has_symlink = True
+            except OSError:
+                pass
             active = work / 'active' / 'recording.old'
             active.mkdir(parents=True)
             operations.prune_quarantine(work, 0, now)
@@ -111,6 +116,8 @@ class QuarantineTests(unittest.TestCase):
             self.assertFalse((quarantine / 'recording.legacy').exists())
             self.assertTrue((quarantine / 'recording.recent' / 'capture.bin').exists())
             self.assertTrue((outside / 'capture.bin').exists())
+            if has_symlink:
+                self.assertTrue((quarantine / 'recording.symlink').exists())
             self.assertTrue(active.exists())
 
     def test_interrupted_expiry_cleanup_resumes(self):
@@ -141,7 +148,7 @@ class StorageRetentionTests(unittest.TestCase):
 
     def test_expired_media_removes_literal_stem_companions_and_empty_directories(self):
         for extension in ('mp4', 'ts', 'mkv'):
-            stem = f'Season/episode [a]*?.{extension}'
+            stem = f'Season/episode [a]*?.{extension}' if os.name != 'nt' else f'Season/episode [a]!#.{extension}'
             media = self.file(stem, 10)
             for suffix in ('nfo', 'json', 'jpg', 'poster.jpg', 'en.srt', 'custom-metadata'):
                 self.file(str(pathlib.Path(stem).with_suffix('')) + '.' + suffix)
@@ -185,8 +192,13 @@ class StorageRetentionTests(unittest.TestCase):
         external = outside / 'old.jpg'
         external.write_bytes(b'external data')
         link = self.channel / 'Season/old.jpg'
-        link.symlink_to(external)
-        (self.channel / 'linked-folder').symlink_to(outside, target_is_directory=True)
+        has_symlink = False
+        try:
+            link.symlink_to(external)
+            (self.channel / 'linked-folder').symlink_to(outside, target_is_directory=True)
+            has_symlink = True
+        except OSError:
+            pass
         operations.prune_recordings(self.channel, 0, self.now)
         self.assertTrue(expired.exists())
         with operations.lock(self.channel / '.retention.lock') as acquired:
@@ -195,11 +207,13 @@ class StorageRetentionTests(unittest.TestCase):
             self.assertTrue(expired.exists())
         operations.prune_recordings(self.channel, 7, self.now)
         self.assertFalse(expired.exists())
-        for path in (rounded, hidden, link, external):
+        for path in (rounded, hidden, external):
             self.assertTrue(path.exists(), str(path))
-        # A channel directory symlink is never traversed, either.
-        operations.prune_recordings(self.channel / 'linked-folder', 7, self.now)
-        self.assertTrue(external.exists())
+        if has_symlink:
+            self.assertTrue(link.exists())
+            # A channel directory symlink is never traversed, either.
+            operations.prune_recordings(self.channel / 'linked-folder', 7, self.now)
+            self.assertTrue(external.exists())
 
     def test_media_unlink_failure_preserves_its_companions(self):
         media = self.file('Season/blocked.mp4', 10)
@@ -221,10 +235,27 @@ class StorageRetentionTests(unittest.TestCase):
         companion = self.file('Season/published.json')
         old = datetime.datetime.now(datetime.timezone.utc).timestamp() - 10 * 86400
         os.utime(media, (old, old))
-        result = subprocess.run(['bash', '-c', 'source "$1/pipeline.sh"; pipeline_init; prune_old_recordings',
-                                 'test', str(ROOT)], capture_output=True, text=True, timeout=10,
-                                env=dict(os.environ, MODE='twitch', CHANNEL='channel', STORAGE_DIR=str(self.root),
-                                         SCRATCH_ROOT=str(self.root / 'scratch'), RETENTION_DAYS='7'))
+
+        def to_bash_path(path):
+            path_str = str(path).replace('\\', '/')
+            if os.name == 'nt':
+                res = subprocess.run(['bash', '-c', f'wslpath -u "{path_str}" 2>/dev/null || echo "{path_str}"'],
+                                     capture_output=True, text=True)
+                converted = res.stdout.strip()
+                if converted:
+                    return converted
+            return path_str
+
+        root_posix = to_bash_path(ROOT)
+        storage_posix = to_bash_path(self.root)
+        scratch_posix = to_bash_path(self.root / 'scratch')
+        cmd = (f'export MODE=twitch CHANNEL=channel STORAGE_DIR="{storage_posix}" '
+               f'SCRATCH_ROOT="{scratch_posix}" RETENTION_DAYS=7; '
+               f'source "{root_posix}/pipeline.sh"; pipeline_init; prune_old_recordings')
+        result = subprocess.run(['bash', '-c', cmd],
+                                capture_output=True, text=True, timeout=10,
+                                env=dict(os.environ, MODE='twitch', CHANNEL='channel', STORAGE_DIR=storage_posix,
+                                         SCRATCH_ROOT=scratch_posix, RETENTION_DAYS='7'))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertFalse(media.exists())
         self.assertFalse(companion.exists())

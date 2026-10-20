@@ -46,9 +46,10 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `YOUTUBE_SPLITTING` | `false` | Continuously record and publish closed segments while the broadcast continues, using downstream stream-copy splitting. |
 | `YOUTUBE_SEGMENT_SECONDS` | `21600` | Target segment duration (6 hours). Integer from `1` to `42900` (11h55m), allowing room for keyframe-aligned cuts. Used when `YOUTUBE_SPLITTING=true`. |
 | `YOUTUBE_PLAYLIST_ID` | Unset | Optional YouTube playlist ID to append uploaded videos to. |
-| `YOUTUBE_TAGS` | Unset | Optional comma-separated tags for uploaded videos. |
+| `YOUTUBE_TAGS` | Unset | Optional comma-separated tags for uploaded videos. Supports template tokens (e.g. `{channel}`, `{mode}`, `{part}`). |
 | `YOUTUBE_CATEGORY_ID` | Unset | Optional YouTube numeric category ID (e.g. `20` for Gaming). |
-| `YOUTUBE_DESCRIPTION` | Unset | Custom description template (defaults to `Uploaded Automatically by <UPLOAD_BOT_NAME>`). |
+| `YOUTUBE_DESCRIPTION` | Unset | Custom description template (defaults to `Uploaded Automatically by <UPLOAD_BOT_NAME>`). Supports placeholders `{channel}`, `{mode}`, `{title}`, `{date}`, `{part_title}`, `{part}`, `{count}`, `{stream_url}`, `{bot_name}`. |
+| `YOUTUBE_THUMBNAIL_TIMESTAMP` | `00:01:00` | Offset (HH:MM:SS) to extract a video frame via FFmpeg as the YouTube video thumbnail. |
 | `MIN_FREE_SPACE_GB` | `0` | Minimum free disk space in GB required on scratch/storage to start recording (`0` disables check). |
 | `RETENTION_DAYS` | `0` | Prune expired MP4/TS/MKV recordings and their matching sidecars from storage (`0` disables pruning). |
 | `QUARANTINE_RETENTION_DAYS` | `7` | Permanently delete whole quarantined jobs N days after entering quarantine (`0` keeps them indefinitely). Runs every 30 seconds, independently of publication. Legacy jobs use their directory modification time. |
@@ -56,6 +57,8 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `DISCORD_WEBHOOK_URL` | Unset | Optional Discord webhook for rich embed go-live and upload-complete alerts. Notification failures do not stop recording. |
 | `DISCORD_MONITOR_WEBHOOK_URL` | Unset | Dedicated webhook for the persistent status message and operational alerts. Only operational alerts fall back to `DISCORD_WEBHOOK_URL`. |
 | `DISCORD_NOTIFY_ON_ERROR` | `true` | Queue operational alerts, including recording completion, disk warnings, quarantine, and quota errors. Does not disable a dedicated persistent status message. |
+| `DISCORD_USERNAME` | `Streamlink (<CHANNEL>)` | Optional username attribution for Discord webhook notifications. |
+| `DISCORD_AVATAR_URL` | Unset | Optional avatar image URL for Discord webhook notifications. |
 | `RECORDER_STALE_SECONDS` | `180` | Report an error after this many seconds without monitor progress or capture writes. Must be at least `150` to allow bounded API requests. |
 | `TWITCH_USER_TOKEN` | Unset | Optional user OAuth token for authenticated Twitch access, such as subscribed-channel ad handling. |
 
@@ -464,7 +467,10 @@ Update dashboards that previously read the shared root `status.json` path.
     "size_bytes": 1073741824,
     "size_human": "1.00 GB",
     "last_growth_at": 1792390530,
-    "stalled": false
+    "stalled": false,
+    "segment_index": 2,
+    "total_duration_seconds": 7200,
+    "total_duration_human": "02:00:00"
   },
   "queues": {
     "active": 1,
@@ -484,7 +490,7 @@ Update dashboards that previously read the shared root `status.json` path.
 
 - `status`: `offline` (confirmed offline stream or stopped recorder), `monitoring` (checking the stream API), `recording` (active capture with recent writes), or `error` (API/capture failure, stale monitor heartbeat, or stalled capture). A stale state file alone cannot report a running recorder.
 - `recorder_heartbeat_at`: Last monitor progress timestamp. During a long capture, recent file writes establish recording activity instead of the monitor heartbeat.
-- `active_capture`: Details of an active or stalled recording, or `null` when the recorder is stopped or has no active job. `last_growth_at` is the capture's last write time (the job creation time before the first bytes arrive); `stalled` indicates no writes for `RECORDER_STALE_SECONDS`.
+- `active_capture`: Details of an active or stalled recording, or `null` when the recorder is stopped or has no active job. `last_growth_at` is the capture's last write time (the job creation time before the first bytes arrive); `stalled` indicates no writes for `RECORDER_STALE_SECONDS`. During continuous YouTube segmentation (`YOUTUBE_SPLITTING=true`), `segment_index` tracks the 1-based child segment number, and `total_duration_seconds` / `total_duration_human` track the total broadcast elapsed time.
 - `queues`: Real-time job counts across all pipeline stages.
 - `disk_space`: Available gigabytes on the scratch and storage filesystems.
 

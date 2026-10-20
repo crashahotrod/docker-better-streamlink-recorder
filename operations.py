@@ -8,7 +8,13 @@ import pathlib
 import shutil
 import sys
 import time
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    try:
+        from backports.zoneinfo import ZoneInfo
+    except ImportError:
+        ZoneInfo = None
 
 from notifications import lock
 
@@ -21,10 +27,21 @@ MEDIA_EXTENSIONS = RETAINED_MEDIA | {
 
 
 def next_quota_reset(now):
-    pacific = ZoneInfo('America/Los_Angeles')
-    local = datetime.datetime.fromtimestamp(now, pacific)
+    if ZoneInfo is not None:
+        try:
+            pacific = ZoneInfo('America/Los_Angeles')
+            local = datetime.datetime.fromtimestamp(now, pacific)
+            tomorrow = local.date() + datetime.timedelta(days=1)
+            return int(datetime.datetime.combine(tomorrow, datetime.time(), pacific).timestamp())
+        except Exception:
+            pass
+    # Approximate Pacific timezone (UTC-7 PDT / UTC-8 PST) when zoneinfo is absent
+    utc = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
+    pacific_offset = datetime.timezone(datetime.timedelta(hours=-7))
+    local = utc.astimezone(pacific_offset)
     tomorrow = local.date() + datetime.timedelta(days=1)
-    return int(datetime.datetime.combine(tomorrow, datetime.time(), pacific).timestamp())
+    reset_dt = datetime.datetime.combine(tomorrow, datetime.time(), pacific_offset)
+    return int(reset_dt.timestamp())
 
 
 def quota_key(secrets):

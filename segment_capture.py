@@ -2,7 +2,10 @@
 """Disk-backed, downstream stream-copy segmentation of continuous Streamlink output."""
 import argparse
 import csv
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import hashlib
 import json
 import math
@@ -126,11 +129,12 @@ class Capture:
         if self.session.exists():
             raise CaptureError('Session identity collision; existing data retained')
         self.writer_lock = open(self.work / f'capture-{job.name}.lock', 'a')
-        try:
-            fcntl.flock(self.writer_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            self.writer_lock.close()
-            raise CaptureError('Session still has a capture writer') from error
+        if fcntl is not None:
+            try:
+                fcntl.flock(self.writer_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                self.writer_lock.close()
+                raise CaptureError('Session still has a capture writer') from error
         job.rename(self.session)
         self.output = self.session / 'outputs'
         self.output.mkdir()

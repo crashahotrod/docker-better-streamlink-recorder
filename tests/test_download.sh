@@ -149,18 +149,21 @@ for MODE in twitch kick; do
 done
 STREAMLINK_EXTRA_ARGS='--hls-live-restart --stream-segment-threads 2'
 build_streamlink_args
-has_restart=0 threads=0
-for arg in "${STREAMLINK_ARGS[@]}"; do
+has_restart=0 threads=0 retry_open=0 stream_timeout=0
+for ((i=0; i<${#STREAMLINK_ARGS[@]}; i++)); do
+    arg="${STREAMLINK_ARGS[i]}"
     if [[ "$arg" == '--hls-live-restart' ]]; then has_restart=$((has_restart + 1)); fi
     if [[ "$arg" == '--stream-segment-threads' ]]; then threads=$((threads + 1)); fi
+    if [[ "$arg" == '--retry-open' && "${STREAMLINK_ARGS[i+1]:-}" == '5' ]]; then retry_open=$((retry_open + 1)); fi
+    if [[ "$arg" == '--stream-timeout' && "${STREAMLINK_ARGS[i+1]:-}" == '60' ]]; then stream_timeout=$((stream_timeout + 1)); fi
 done
-[[ "$has_restart" -eq 1 && "$threads" -eq 1 ]]
+[[ "$has_restart" -eq 1 && "$threads" -eq 1 && "$retry_open" -eq 1 && "$stream_timeout" -eq 1 ]]
 MODE=twitch TWITCH_USER_TOKEN=''
 STREAMLINK_EXTRA_ARGS='--hls-live-restart --stream-segment-threads 2 --hls-segment-ignore-names "ad,commercial" --twitch-api-header "Client-ID=abc 123"'
 build_streamlink_args
 expected=(--hls-live-restart --stream-segment-threads 2 --hls-segment-ignore-names 'ad,commercial' --twitch-api-header 'Client-ID=abc 123')
-[[ ${#STREAMLINK_ARGS[@]} -eq $((8 + ${#expected[@]})) ]]
-for i in "${!expected[@]}"; do [[ "${STREAMLINK_ARGS[i+8]}" == "${expected[i]}" ]]; done
+[[ ${#STREAMLINK_ARGS[@]} -eq $((12 + ${#expected[@]})) ]]
+for i in "${!expected[@]}"; do [[ "${STREAMLINK_ARGS[i+12]}" == "${expected[i]}" ]]; done
 STREAMLINK_EXTRA_ARGS='--twitch-api-header "unterminated'
 if build_streamlink_args; then echo 'Malformed extra arguments accepted' >&2; exit 1; fi
 unset STREAMLINK_EXTRA_ARGS

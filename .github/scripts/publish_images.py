@@ -6,8 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 
-PLATFORMS = {'amd64': ('linux', 'amd64', ''), 'arm64': ('linux', 'arm64', ''),
-             'armv7': ('linux', 'arm', 'v7')}
+PLATFORMS = {'amd64': ('linux', 'amd64', ''), 'arm64': ('linux', 'arm64', '')}
 DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
 COMPONENT = r'[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*'
 REPOSITORY = re.compile(r'(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?' + COMPONENT + r'(?:/' + COMPONENT + r')*')
@@ -30,7 +29,7 @@ def repositories(metadata):
 def stage(metadata, arch, directory, image='streamlink-recorder:test', environ=os.environ, run=subprocess.run):
     targets = repositories(metadata)
     suffix = f"ci-{environ['GITHUB_RUN_ID']}-{environ['GITHUB_RUN_ATTEMPT']}-{arch}"
-    if arch not in PLATFORMS or not re.fullmatch(r'ci-[0-9]+-[0-9]+-(amd64|arm64|armv7)', suffix):
+    if arch not in PLATFORMS or not re.fullmatch(r'ci-[0-9]+-[0-9]+-(amd64|arm64)', suffix):
         raise ValueError('Invalid build run or architecture')
     configuration, = json.loads(run(['docker', 'image', 'inspect', image], check=True,
                                   capture_output=True, text=True).stdout)

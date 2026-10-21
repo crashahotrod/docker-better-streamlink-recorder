@@ -818,15 +818,22 @@ pinned in `build/uploader-modules.txt`; its upstream tests run during the build.
 Build tools stay in separate build stages. Keep persistent
 scratch/storage volumes when upgrading; do not prune pending or quarantined jobs.
 
-CI starts lint/configuration checks and three architecture builds in parallel:
+Published images support AMD64 and ARM64. ARMv7 publication has been retired:
+Debian's ARMv7 Chromium packages are outdated and fail the dependency security
+gate ([Debian ARMv7 Chromium removal](https://bugs.debian.org/1148256)). Use a
+64-bit OS and the ARM64 image on compatible ARM hardware. Existing ARMv7 images
+will not receive further updates.
+
+CI starts lint/configuration checks and both architecture builds in parallel:
 
 | Architecture | Runner | Verification |
 | --- | --- | --- |
 | AMD64 | `ubuntu-24.04` | Container startup/flag checks, permissions, and the complete recording suite once inside the release image. |
 | ARM64 | `ubuntu-24.04-arm` | Native dependency and real media publication smoke checks. |
-| ARMv7 | `ubuntu-24.04` with QEMU | Dependency and real media publication smoke checks under emulation. |
 
-Each image receives an offline dependency scan. A shared composite action at
+Each image receives an offline dependency scan. Failed scans print a package
+summary in the job log and retain the full `security.json` diagnostic artifact.
+A shared composite action at
 `.github/actions/build-recorder/action.yml` restores architecture-specific
 BuildKit layers and Go module/compiler caches. The Go caches are explicitly
 injected into and extracted from BuildKit cache mounts so they survive hosted

@@ -68,8 +68,8 @@ benchmark remains an optional developer tool (`benchmark_media.py`), separate
 from functional checks. Real-service authentication, remote upload results,
 hours-long recording limits, target-specific browser behavior, player GUI
 compatibility, and behavior on physical target devices require separate integration checks.
-CI builds all three release architectures in parallel. ARM64 smoke checks run on
-a native ARM64 runner; ARMv7 checks use QEMU. All platforms receive the dependency
+CI builds the AMD64 and ARM64 release architectures in parallel. ARM64 smoke checks
+run on a native ARM64 runner. Both platforms receive the dependency
 scan. Only the AMD64 image runs the complete recording suite. Successful push
 builds stage the already tested images and publish multi-architecture manifests
 by digest after all jobs pass; the publication job does not rebuild an image.
@@ -78,3 +78,6 @@ Run `bash tests/scan_image.sh` after building the image to repeat the CI depende
 scan. Only the database download needs external networking. The image scan has
 networking disabled and retains `security.json` under `TEST_ARTIFACT_DIR` when set.
 It uses Trivy 0.76.0 and excludes vulnerabilities without an available fix.
+Failed scans print a compact package summary while preserving the scan exit code
+and full JSON report. ARMv7 images are no longer published because Debian's
+outdated Chromium packages for that architecture fail the security gate.

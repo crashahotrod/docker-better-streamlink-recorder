@@ -51,9 +51,6 @@ jobs:
           - arch: arm64
             platform: linux/arm64
             runner: ubuntu-24.04-arm
-          - arch: armv7
-            platform: linux/arm/v7
-            runner: ubuntu-24.04
     env:
       TEST_ARTIFACT_DIR: ${{ github.workspace }}/test-artifacts
     steps:

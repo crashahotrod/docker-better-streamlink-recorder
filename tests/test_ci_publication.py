@@ -30,15 +30,15 @@ class ImagePublicationTests(unittest.TestCase):
                 'run_attempt': '1', 'commit': 'a' * 40, 'images': images}))
 
     def test_stage_pushes_loaded_test_image_and_records_each_registry_digest(self):
-        configuration = {'Os': 'linux', 'Architecture': 'arm', 'Variant': 'v7',
+        configuration = {'Os': 'linux', 'Architecture': 'arm64',
                          'RepoDigests': ['docker.io/owner/recorder@sha256:' + '1' * 64,
                                          'ghcr.io/owner/recorder@sha256:' + '2' * 64]}
         run = Mock(return_value=subprocess.CompletedProcess([], 0, json.dumps([configuration])))
-        publication.stage(self.metadata, 'armv7', self.directory, environ=self.env, run=run)
+        publication.stage(self.metadata, 'arm64', self.directory, environ=self.env, run=run)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(2, sum(command[1] == 'push' for command in commands))
-        self.assertIn(['docker', 'tag', 'streamlink-recorder:test', 'owner/recorder:ci-123-1-armv7'], commands)
-        receipt = json.loads((self.directory / 'armv7.json').read_text())
+        self.assertIn(['docker', 'tag', 'streamlink-recorder:test', 'owner/recorder:ci-123-1-arm64'], commands)
+        receipt = json.loads((self.directory / 'arm64.json').read_text())
         self.assertTrue(receipt['images']['owner/recorder'].endswith('1' * 64))
         self.assertTrue(receipt['images']['ghcr.io/owner/recorder'].endswith('2' * 64))
         self.assertFalse(any(command[1] in ('build', 'buildx') for command in commands))
@@ -47,17 +47,24 @@ class ImagePublicationTests(unittest.TestCase):
         run = Mock(return_value=subprocess.CompletedProcess([], 0, json.dumps([{
             'Os': 'linux', 'Architecture': 'amd64'}])))
         with self.assertRaises(ValueError):
-            publication.stage(self.metadata, 'armv7', self.directory, environ=self.env, run=run)
+            publication.stage(self.metadata, 'arm64', self.directory, environ=self.env, run=run)
         self.assertEqual(1, run.call_count)
         run.reset_mock()
         run.side_effect = [subprocess.CompletedProcess([], 0, json.dumps([{
-            'Os': 'linux', 'Architecture': 'arm', 'Variant': 'v7'}])), None,
+            'Os': 'linux', 'Architecture': 'arm64'}])), None,
             subprocess.CalledProcessError(1, 'docker push')]
         with self.assertRaises(subprocess.CalledProcessError):
+            publication.stage(self.metadata, 'arm64', self.directory, environ=self.env, run=run)
+        self.assertFalse((self.directory / 'arm64.json').exists())
+
+    def test_retired_armv7_cannot_be_staged(self):
+        run = Mock()
+        with self.assertRaises(ValueError):
             publication.stage(self.metadata, 'armv7', self.directory, environ=self.env, run=run)
+        run.assert_not_called()
         self.assertFalse((self.directory / 'armv7.json').exists())
 
-    def test_merge_creates_all_release_tags_from_three_verified_digests(self):
+    def test_merge_creates_all_release_tags_from_two_verified_digests(self):
         self.receipts()
         run = Mock()
         publication.merge(self.metadata, self.directory, self.env, run)
@@ -66,14 +73,14 @@ class ImagePublicationTests(unittest.TestCase):
             command = call.args[0]
             self.assertEqual(['docker', 'buildx', 'imagetools', 'create'], command[:4])
             self.assertEqual(2, command.count('--tag'))
-            self.assertEqual(3, sum('@sha256:' in item for item in command))
+            self.assertEqual(2, sum('@sha256:' in item for item in command))
             self.assertNotIn('build', command)
 
     def test_missing_or_invalid_receipts_fail_before_any_release_changes(self):
         for corrupt in ('missing', 'commit', 'run_id', 'digest', 'repository', 'future_attempt'):
             with self.subTest(corrupt=corrupt):
                 self.receipts()
-                path = self.directory / 'armv7.json'
+                path = self.directory / 'arm64.json'
                 value = json.loads(path.read_text())
                 if corrupt == 'missing':
                     path.unlink()

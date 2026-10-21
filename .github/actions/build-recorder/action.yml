@@ -5,7 +5,7 @@ inputs:
     description: Docker target platform
     required: true
   arch:
-    description: Cache namespace (amd64, arm64, or armv7)
+    description: Cache namespace (amd64 or arm64)
     required: true
   image:
     description: Local image tag used by the offline checks
@@ -16,10 +16,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: docker/setup-qemu-action@v4
-      if: inputs.arch == 'armv7'
-      with:
-        platforms: arm
     - uses: docker/setup-buildx-action@v4
     - name: Restore Go module and compiler caches
       id: go-cache

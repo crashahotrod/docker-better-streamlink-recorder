@@ -9,95 +9,59 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+concurrency:
+  group: image-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
 jobs:
   checks:
-    name: Recording pipeline checks
-    runs-on: ubuntu-latest
+    name: Lint and configuration
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
-    env:
-      TEST_ARTIFACT_DIR: ${{ github.workspace }}/test-artifacts
     steps:
-      - uses: actions/checkout@v4
-      - name: Install test dependencies
+      - uses: actions/checkout@v6
+      - name: Install ShellCheck if needed
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl jq shellcheck gosu supervisor
+          if ! command -v shellcheck > /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends shellcheck
+          fi
       - name: Validate workflows
-        run: |
-          docker run --rm --network none -v "$PWD:/repo:ro" --workdir /repo rhysd/actionlint:1.7.11
-      - name: Run shell and media checks
-        run: bash tests/run.sh
-      - name: Verify application user permissions
-        run: |
-          sudo useradd --create-home --user-group recorder-test
-          sudo TEST_APP_USER=recorder-test bash tests/test_permissions.sh
-          sudo TEST_APP_USER=recorder-test bash tests/test_permissions_isolation.sh
+        run: docker run --rm --network none -v "$PWD:/repo:ro" --workdir /repo rhysd/actionlint:1.7.11
+      - name: Lint shell scripts
+        run: bash tests/run.sh --lint-only
       - name: Validate Compose sample
         run: docker compose -f docker-compose.yml.sample config --quiet
-      - name: Build local test image
-        run: docker build --pull -t streamlink-recorder:test .
-      - name: Check container startup without live services
-        run: bash tests/test_container.sh
-      - name: Check release image dependencies
-        run: bash tests/scan_image.sh
-      - name: Retain failed check diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failed-check-diagnostics
-          path: test-artifacts/
-          if-no-files-found: ignore
 
-  platform-checks:
-    name: Image smoke check (${{ matrix.platform }})
-    runs-on: ubuntu-latest
-    needs: checks
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [linux/arm64, linux/arm/v7]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - name: Build and test platform image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          target: platform-test
-          load: true
-          tags: recorder-platform:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  build-test-push:
-    name: Build, Test and Push Docker Image
-    needs: [checks, platform-checks]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+  images:
+    name: Build and verify (${{ matrix.arch }})
+    # Independent of lint and the other platforms: only publication waits for all.
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
-
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - arch: armv7
+            platform: linux/arm/v7
+            runner: ubuntu-24.04
+    env:
+      TEST_ARTIFACT_DIR: ${{ github.workspace }}/test-artifacts
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Fetches full history for better caching/context
-      
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Docker meta
+      - uses: actions/checkout@v6
+      - name: Image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        if: github.event_name != 'pull_request'
+        uses: docker/metadata-action@v6
         with:
           images: |
             ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKERHUB_PROJECT_NAME }}
@@ -108,32 +72,109 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},priority=850
             type=ref,event=branch,priority=800
             type=sha,format=short,priority=600,enable=false
-
+      - uses: ./.github/actions/build-recorder
+        with:
+          platform: ${{ matrix.platform }}
+          arch: ${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Verify permissions from a private checkout
+        if: matrix.arch == 'amd64'
+        run: |
+          docker run --rm --network none --entrypoint bash -e TEST_APP_USER=apps \
+            --mount "type=bind,source=$PWD,target=/project,readonly" --workdir /project \
+            streamlink-recorder:test tests/test_permissions_isolation.sh
+      - name: Check application startup and complete recording suite
+        if: matrix.arch == 'amd64'
+        run: bash tests/test_container.sh
+      - name: Check platform dependencies and media publication
+        if: matrix.arch != 'amd64'
+        run: |
+          docker run --rm --network none -e MODE=twitch -e CHANNEL=platform \
+            -e CLIENT_ID=example -e CLIENT_SECRET=example \
+            --mount "type=bind,source=$PWD,target=/project,readonly" \
+            streamlink-recorder:test bash /project/tests/test_platform.sh
+      - name: Check release image dependencies
+        run: bash tests/scan_image.sh
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push production image
-        uses: docker/build-push-action@v6
+      - name: Stage verified image and record immutable registry digests
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE_METADATA: ${{ steps.meta.outputs.json }}
+        run: python3 .github/scripts/publish_images.py stage --arch '${{ matrix.arch }}' --directory digests
+      - name: Upload digest receipt
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
         with:
-          context: .
-          file: Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          name: digests-${{ matrix.arch }}
+          path: digests/*.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+      - name: Retain failed check diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-check-diagnostics-${{ matrix.arch }}
+          path: test-artifacts/
+          if-no-files-found: ignore
+          overwrite: true
 
+  build-test-push:
+    name: Publish verified multi-architecture manifests
+    needs: [checks, images]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKERHUB_PROJECT_NAME }}
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }},priority=1000
+            type=semver,pattern={{version}},priority=900
+            type=semver,pattern={{major}}.{{minor}},priority=850
+            type=ref,event=branch,priority=800
+            type=sha,format=short,priority=600,enable=false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: digests
+          merge-multiple: true
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assemble release tags from tested digests (no rebuild)
+        env:
+          IMAGE_METADATA: ${{ steps.meta.outputs.json }}
+        run: python3 .github/scripts/publish_images.py merge --directory digests
       - name: Delete Old and Untagged Images
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:

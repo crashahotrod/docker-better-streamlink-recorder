@@ -10,6 +10,7 @@ export SCRATCH_ROOT="$TEST_ROOT/scratch" STORAGE_DIR="$TEST_ROOT/storage"
 export MODE=twitch CHANNEL=platform REMUX=false UPLOAD=false ENCODE=false
 python3 -c 'import streamlink.webbrowser.chromium'
 streamlink --version
+rclone version
 /etc/youtubeuploader -version
 python3 "$ROOT/tests/generate_media_fixtures.py" --intro-seconds 1 --main-seconds 1 --output "$TEST_ROOT/fixtures"
 pipeline_init

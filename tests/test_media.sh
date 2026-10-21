@@ -89,7 +89,8 @@ for MODE in twitch kick; do
                 run_queue_once encode encode_job
                 run_queue_once publish publish_recording
                 files=()
-                mapfile -d '' -t files < <(find "$STORAGE_DIR/$CHANNEL" -type f -name "*$identifier.*" -print0)
+                mapfile -d '' -t files < <(find "$STORAGE_DIR/$CHANNEL" -type f -name "*$identifier.*" \
+                    \( -name '*.mp4' -o -name '*.ts' \) -print0)
                 [[ "${#files[@]}" -eq 1 ]]
                 final="${files[0]}"
                 ffmpeg -nostdin -v error -xerror -i "$final" -f null -

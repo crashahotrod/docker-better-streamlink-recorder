@@ -6,6 +6,40 @@ import json
 import os
 from pathlib import Path
 import urllib.parse
+import math
+
+
+def metrics(status):
+    def escaped(value):
+        return str(value).replace('\\', '\\\\').replace('\n', '\\n').replace('"', '\\"')
+
+    def number(value):
+        try:
+            value = float(value)
+            return str(value) if math.isfinite(value) and value >= 0 else '0'
+        except (TypeError, ValueError):
+            return '0'
+
+    labels = f'channel="{escaped(status.get("channel", ""))}",mode="{escaped(status.get("mode", ""))}"'
+    active, disk = status.get('active_capture') or {}, status.get('disk_space') or {}
+    samples = [
+        ('streamlink_channel_status', 'Channel state: offline=0, monitoring=1, recording=2, error=3.',
+         {'offline': 0, 'monitoring': 1, 'recording': 2, 'error': 3}.get(status.get('status'), 3)),
+        ('streamlink_active_duration_seconds', 'Elapsed active capture duration in seconds.',
+         active.get('total_duration_seconds') or active.get('duration_seconds', 0)),
+        ('streamlink_active_bytes_written', 'Bytes written to the active capture.', active.get('size_bytes', 0)),
+        ('streamlink_scratch_available_bytes', 'Available scratch filesystem bytes.',
+         disk.get('scratch_available_bytes', disk.get('scratch_free_gb', 0) * 1024 ** 3)),
+        ('streamlink_storage_available_bytes', 'Available archive filesystem bytes.',
+         disk.get('storage_available_bytes', disk.get('storage_free_gb', 0) * 1024 ** 3)),
+    ]
+    lines = []
+    for name, help_text, value in samples:
+        lines += [f'# HELP {name} {help_text}', f'# TYPE {name} gauge', f'{name}{{{labels}}} {number(value)}']
+    lines += ['# HELP streamlink_queue_depth Number of jobs in each queue.', '# TYPE streamlink_queue_depth gauge']
+    for stage in ('active', 'normalize', 'upload', 'encode', 'publish', 'quarantine'):
+        lines.append(f'streamlink_queue_depth{{{labels},stage="{stage}"}} {number(status.get("queues", {}).get(stage, 0))}')
+    return ('\n'.join(lines) + '\n').encode('utf-8')
 
 
 class StatusHandler(BaseHTTPRequestHandler):
@@ -35,16 +69,19 @@ class StatusHandler(BaseHTTPRequestHandler):
         route = urllib.parse.urlsplit(self.path).path
         if route in ('/', '/index.html'):
             self.respond(200, Path(__file__).with_name('dashboard.html').read_bytes(), 'text/html; charset=utf-8')
-        elif route in ('/status.json', '/healthz'):
+        elif route in ('/status.json', '/healthz', '/metrics'):
             try:
                 with (self.work / 'status.json').open('rb') as source:
                     body = source.read(1024 * 1024 + 1)
-                if len(body) > 1024 * 1024 or not isinstance(json.loads(body), dict):
+                status = json.loads(body)
+                if len(body) > 1024 * 1024 or not isinstance(status, dict):
                     raise ValueError('Invalid status')
+                if route == '/metrics':
+                    body = metrics(status)
             except (OSError, ValueError):
                 self.respond(503, b'{"error":"Status is not available yet"}\n', 'application/json')
                 return
-            self.respond(200, body, 'application/json')
+            self.respond(200, body, 'text/plain; version=0.0.4; charset=utf-8' if route == '/metrics' else 'application/json')
         else:
             self.respond(404, b'Not found\n', 'text/plain; charset=utf-8')
 

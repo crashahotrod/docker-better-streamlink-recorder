@@ -241,13 +241,16 @@ class StorageRetentionTests(unittest.TestCase):
         self.file('Season/broadcast - part-0001.mp4', 10)
         newer = self.file('Season/broadcast - part-0002.mp4', 1)
         chat = self.file('Season/broadcast.chat.json', 10)
+        chapters = self.file('Season/broadcast.chapters.txt', 10)
         unrelated = self.file('Season/other.chat.json', 10)
         operations.prune_recordings(self.channel, 7, self.now)
         self.assertTrue(chat.exists())
+        self.assertTrue(chapters.exists())
         old = self.now - 10 * 86400
         os.utime(newer, (old, old))
         operations.prune_recordings(self.channel, 7, self.now)
         self.assertFalse(chat.exists())
+        self.assertFalse(chapters.exists())
         self.assertTrue(unrelated.exists())
 
     def test_shell_pruner_uses_the_current_channel_storage(self):

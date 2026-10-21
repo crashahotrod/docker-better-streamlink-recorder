@@ -16,6 +16,8 @@ services:
       # - STREAM_QUALITY=best # e.g. 1080p60,720p60,best
       # - TWITCH_AUDIO_TRACK=all # all, 1, or 2; selects only audio streams actually delivered
       # - ARCHIVE_CHAT=true # Twitch IRC / Kick WebSocket chat JSON sidecars
+      # - STREAM_CHAPTERS=true # Collect title/category changes as MP4 chapters and .chapters.txt
+      # - CHAPTER_POLL_INTERVAL=60 # Metadata poll interval while recording (minimum 15 seconds)
       # - TWITCH_CHAT_USERNAME= # Optional authenticated IRC login
       # - TWITCH_CHAT_TOKEN= # IRC token with chat:read; separate from playback token
       # - KICK_CHATROOM_ID= # Optional override if automatic chatroom lookup is blocked
@@ -45,7 +47,11 @@ services:
       # - YOUTUBE_TAGS= # Comma-separated tags, e.g. gaming,stream,vod. Supports {channel}, {mode}, {part}
       # - YOUTUBE_CATEGORY_ID= # e.g. 20 for Gaming
       # - YOUTUBE_DESCRIPTION= # Custom description template: {channel}, {mode}, {title}, {date}, {part}, {stream_url}
-      # - YOUTUBE_THUMBNAIL_TIMESTAMP=00:01:00 # Frame extraction timestamp for automatic video thumbnail
+      # - YOUTUBE_THUMBNAIL_TIMESTAMP=20% # Representative frame after this percentage or HH:MM:SS offset
+      # Optional cloud archive (rclone config at /config/rclone.conf or standard rclone environment)
+      # - RCLONE_REMOTE=b2:my-bucket/archives
+      # - RCLONE_BWLIMIT=8M # Bytes/second; leave unset for unlimited
+      # - RCLONE_RETRIES=3
       # Optional notifications & monitoring
       # - NOTIFICATION_PROVIDER=ntfy # discord (default), webhook, ntfy, gotify, telegram
       # - NOTIFICATION_URL=https://ntfy.example/recordings # Full topic/webhook/Gotify message endpoint
@@ -54,13 +60,15 @@ services:
       # - TELEGRAM_BOT_TOKEN= # Required for provider=telegram
       # - TELEGRAM_CHAT_ID= # Required for provider=telegram
       # - NOTIFICATION_ON_ERROR=true
-      # - HTTP_STATUS_ENABLED=true # Read-only dashboard and /status.json
+      # - HTTP_STATUS_ENABLED=true # Read-only dashboard, /status.json and Prometheus /metrics
       # - HTTP_STATUS_PORT=8080
       # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... # Stream go-live & upload notifications
       # - DISCORD_MONITOR_WEBHOOK_URL=https://discord.com/api/webhooks/... # Separate monitor webhook for persistent status & operational alerts
       # - DISCORD_NOTIFY_ON_ERROR=true # Broadcast operational alerts (recording complete, low disk, quarantine, quota; default true)
       # - DISCORD_USERNAME= # Optional webhook username override (defaults to "Streamlink (<channel>)")
       # - DISCORD_AVATAR_URL= # Optional webhook avatar image URL
+      # - DISCORD_PING_ROLE_ID= # Ping only this role on go-live alerts
+      # - DISCORD_THREAD_ID= # Existing thread for webhook messages and status edits
       # - RECORDER_STALE_SECONDS=180 # Error status after monitor/capture inactivity; minimum 150 seconds
       # - TWITCH_USER_TOKEN=yourUserToken # Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
       # - MIN_FREE_SPACE_GB=5 # Guardrail: Minimum free GB required on disk before recording (0=disabled)
@@ -68,6 +76,7 @@ services:
       # - QUARANTINE_RETENTION_DAYS=7 # Delete quarantined jobs after N days (0=keep indefinitely)
       # - POST_PUBLISH_COMMAND= # Script/command to run after publication ($PUBLISHED_FILE, $PUBLISHED_CHANNEL, $PUBLISHED_MODE)
     restart: always
+    stop_grace_period: 120s
     # Enable HTTP_STATUS_ENABLED above before publishing the dashboard port.
     # ports:
     #   - "127.0.0.1:8080:8080"

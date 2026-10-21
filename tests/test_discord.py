@@ -64,6 +64,40 @@ class DiscordTests(unittest.TestCase):
         sent = json.loads(self.open.call_args.args[0].data)
         self.assertEqual(payload, sent)
 
+    def test_only_live_events_allow_the_configured_role(self):
+        self.env['DISCORD_PING_ROLE_ID'] = '123456789'
+        discord.enqueue(self.work, 'public', {'content': '@everyone <@&999> Live'}, 'live')
+        self.worker.deliver()
+        sent = json.loads(self.open.call_args.args[0].data)
+        self.assertEqual({'parse': [], 'roles': ['123456789']}, sent['allowed_mentions'])
+        self.assertTrue(sent['content'].startswith('<@&123456789> '))
+        self.event()
+        self.worker.deliver()
+        self.assertEqual({'parse': []}, json.loads(self.open.call_args.args[0].data)['allowed_mentions'])
+        self.worker.persistent_status()
+        self.assertEqual({'parse': []}, json.loads(self.open.call_args.args[0].data)['allowed_mentions'])
+
+    def test_thread_routing_preserves_queries_and_status_edits(self):
+        self.env['DISCORD_THREAD_ID'] = '987654321'
+        self.env['DISCORD_WEBHOOK_URL'] += '?wait=false&thread_id=old&custom=kept'
+        self.event()
+        self.worker.deliver()
+        url = self.open.call_args.args[0].full_url
+        self.assertIn('wait=true', url)
+        self.assertIn('custom=kept', url)
+        self.assertIn('thread_id=987654321', url)
+        self.assertNotIn('thread_id=old', url)
+        self.worker.persistent_status()
+        self.assertIn('thread_id=987654321', self.open.call_args.args[0].full_url)
+        self.now += 30
+        self.worker.persistent_status()
+        request = self.open.call_args.args[0]
+        self.assertEqual('PATCH', request.method)
+        self.assertIn('/messages/message-1?thread_id=987654321', request.full_url)
+        self.env['DISCORD_THREAD_ID'] = '123'
+        self.worker.persistent_status()
+        self.assertEqual('POST', self.open.call_args.args[0].method)
+
     def test_retry_survives_restart_and_does_not_block_other_events(self):
         failed = self.event()
         self.open.side_effect = [self.error(500), Response()]

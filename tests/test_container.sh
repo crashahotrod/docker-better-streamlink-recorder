@@ -116,19 +116,20 @@ for mode in twitch kick; do
                 exit 1
             fi
             docker exec "$container_id" python3 -c 'import urllib.request; assert b"Active capture" in urllib.request.urlopen("http://127.0.0.1:8080/", timeout=3).read()'
+            docker exec "$container_id" python3 -c 'import urllib.request; assert b"streamlink_queue_depth" in urllib.request.urlopen("http://127.0.0.1:8080/metrics", timeout=3).read()'
             # Required worker failures must fail health even while other workers run.
             docker exec "$container_id" supervisorctl stop streamlink_download > /dev/null
             if docker exec "$container_id" python3 /etc/streamlink/tools/healthcheck.py; then
                 echo 'Healthcheck accepted stopped recorder' >&2; exit 1
             fi
-            docker stop --time 10 "$container_id" > /dev/null
+            docker stop --time 120 "$container_id" > /dev/null
             container_id=''
         done
     done
 done
 # Run media and recovery checks with the actual image's Debian tools as apps.
 docker run --network none --rm --entrypoint bash --user apps \
-    -e TEST_ARTIFACT_DIR=/test-diagnostics -e TEST_MEDIA_INTRO_SECONDS=90 -e TEST_MEDIA_MAIN_SECONDS=6 \
+    -e TEST_ARTIFACT_DIR=/test-diagnostics \
     --mount "type=bind,source=$TEST_MOUNT_ROOT/diagnostics,target=/test-diagnostics" \
     --mount "type=bind,source=$SOURCE_ROOT,target=/project,readonly" \
     --workdir /project "$IMAGE" -c 'bash tests/run.sh --behavior-only'

@@ -4,6 +4,8 @@ Run `bash tests/run.sh` as a non-root user on Linux with Bash, Python 3,
 FFmpeg/ffprobe (libx264), ExifTool, jq, ShellCheck, Supervisor, and util-linux.
 Python discovery uses `/usr/bin/python3` so it can import the system Supervisor
 package. The runner checks shell syntax and ShellCheck before behavioral tests.
+Use `bash tests/run.sh --lint-only` to run just syntax and ShellCheck. CI runs
+this on the host and the complete behavioral suite once in the AMD64 image.
 
 | Behavior | Coverage |
 | --- | --- |
@@ -27,6 +29,7 @@ package. The runner checks shell syntax and ShellCheck before behavioral tests.
 | Backoff deadlines/cap, invalid retry state, queue progress despite failures, one-pass workers, completion handoff recovery, duplicate-monitor exclusion, persisted flags, Unicode filename limits and recovery path boundaries | `test_queue.sh` |
 | Worker enable/disable flags and process-group shutdown configuration | `test_supervisor.py` |
 | Stable-release dependency selection, immutable commit pins and failure without partial updates | `test_dependency_updates.py` |
+| Registry staging of the loaded test image, platform identity, digest-only manifest assembly, failed pushes, stale/missing receipts and same-run retries | `test_ci_publication.py` |
 | Fresh/reused volumes, queue directories, unreadable credentials, render-node group access after gosu and private checkout isolation | `test_permissions.sh`, `test_permissions_isolation.sh` |
 | Built entrypoint, persisted captures, actual workers for both services and every upload/encode flag combination, image dependencies and full HLS processing matrix | `test_container.sh` |
 | Uploader/Streamlink execution and complete codec-change repair/publication on each advertised architecture | `test_platform.sh` |
@@ -48,11 +51,14 @@ Hardware encoder tests check generated arguments and failed-device handling with
 mocks. Device permissions use a private character-device node. Actual
 NVENC/VAAPI/QSV encoding still requires testing on a host with the relevant GPU.
 The HLS integration test is skipped when Streamlink is unavailable locally and is
-run by the image suite using 90-second and six-second fixture periods.
+run by the image suite using its own 90-second and six-second fixture periods.
+These long fixtures are generated only for the HLS test, preserving the long
+opening regression without increasing every normalization test's workload.
 
 Run Python discovery with `/usr/bin/python3 -m unittest discover -s tests -p 'test_*.py' -v`,
 or invoke a test file directly. Configure media durations with
-`TEST_MEDIA_INTRO_SECONDS` and `TEST_MEDIA_MAIN_SECONDS`. Generated fixtures and
+`TEST_MEDIA_INTRO_SECONDS` and `TEST_MEDIA_MAIN_SECONDS`. The independent HLS
+durations use `TEST_HLS_INTRO_SECONDS` and `TEST_HLS_MAIN_SECONDS`. Generated fixtures and
 test volumes are temporary. Set `TEST_ARTIFACT_DIR` to retain failed media/pipeline
 diagnostics; CI uploads these automatically. Expected negative cases log errors
 but must finish with passing assertions and exit zero.
@@ -62,8 +68,11 @@ benchmark remains an optional developer tool (`benchmark_media.py`), separate
 from functional checks. Real-service authentication, remote upload results,
 hours-long recording limits, target-specific browser behavior, player GUI
 compatibility, and behavior on physical target devices require separate integration checks.
-CI additionally builds and smoke-tests ARM64 and ARMv7 images under QEMU before
-publication; the complete recording suite runs on amd64.
+CI builds all three release architectures in parallel. ARM64 smoke checks run on
+a native ARM64 runner; ARMv7 checks use QEMU. All platforms receive the dependency
+scan. Only the AMD64 image runs the complete recording suite. Successful push
+builds stage the already tested images and publish multi-architecture manifests
+by digest after all jobs pass; the publication job does not rebuild an image.
 
 Run `bash tests/scan_image.sh` after building the image to repeat the CI dependency
 scan. Only the database download needs external networking. The image scan has

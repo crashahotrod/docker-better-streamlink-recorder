@@ -14,7 +14,7 @@ import time
 
 import media
 from notifications import atomic_json, enqueue, lock
-from chat_archive import publish_session
+from publication import publish_session
 from segment_capture import (Capture, CaptureError, FIELDS, LowSpace, MAX_DURATION,
                              Source, receipt_data, report_receipt, require_space,
                              state, verify_session_source)

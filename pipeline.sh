@@ -177,7 +177,7 @@ public_notifications_enabled() {
 
 queue_discord() {
     # Only local, atomic outbox writes happen in recording/processing workers.
-    python3 "$(dirname -- "${BASH_SOURCE[0]}")/notifications.py" enqueue "$1" <<< "$2" || {
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/notifications.py" enqueue "$1" "${3:-}" <<< "$2" || {
         echo '[Notifications] Could not queue notification; application work will continue.' >&2
         return 1
     }
@@ -331,7 +331,7 @@ notify_youtube_quota_exceeded() {
 }
 
 notify_discord() {
-    local message="$1" title="${2:-}" url="${3:-}" author="${4:-}"
+    local message="$1" title="${2:-}" url="${3:-}" author="${4:-}" kind="${5:-}"
     public_notifications_enabled || return 0
     local payload
     if [[ -n "$title" && -n "$url" ]]; then
@@ -355,7 +355,7 @@ notify_discord() {
     else
         payload=$(jq -n --arg content "$message" '{content: $content}') || return 1
     fi
-    queue_discord public "$payload"
+    queue_discord public "$payload" "$kind"
 }
 
 prune_old_recordings() {
@@ -473,7 +473,7 @@ publish_part() (
     local job="$1" id="$2" input="$3" extension="${3##*.}" final temporary='' title checksum
     final=$(part_destination "$job" "$id" "$extension") || return 1
     if [[ -e "$final" ]]; then
-        part_committed "$job" "$id" "$extension" && publish_chat "$job" "$final"
+        part_committed "$job" "$id" "$extension" && publish_sidecars "$job" "$id" "$final"
         return
     fi
     read_field "$job/title" title || return 1
@@ -482,6 +482,7 @@ publish_part() (
     trap 'rm -f -- "$temporary/media.$extension"; rmdir -- "$temporary"' EXIT
     cp -- "$input" "$temporary/media.$extension" && cmp -s -- "$input" "$temporary/media.$extension" || return 1
     if [[ "$extension" == mp4 ]]; then
+        python3 "$(dirname -- "${BASH_SOURCE[0]}")/content.py" embed "$job" "$id" "$temporary/media.$extension" || return 1
         exiftool -q -q -title="$title" -api largefilesupport=1 -overwrite_original "$temporary/media.$extension" || return 1
     fi
     verify_part "$job" "$id" "$temporary/media.$extension" --publication || return 1
@@ -489,12 +490,16 @@ publish_part() (
     write_state "$job/parts/$id.published.extension" "$extension" &&
         write_state "$job/parts/$id.published.sha256" "$checksum" || return 1
     ln -- "$temporary/media.$extension" "$final" || return 1
-    publish_chat "$job" "$final" || return 1
-    run_post_publish "$final"
+    publish_sidecars "$job" "$id" "$final" || return 1
 )
 
-publish_chat() {
-    python3 "$(dirname -- "${BASH_SOURCE[0]}")/chat_archive.py" publish "$1" "$2"
+publish_sidecars() {
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/publication.py" part "$1" "$2" "$3" || return 1
+    # Cloud retries can reach this through an already committed local file.
+    if [[ -n "${POST_PUBLISH_COMMAND:-}" && ! -f "$1/parts/$2.post-published" ]]; then
+        run_post_publish "$3"
+        write_state "$1/parts/$2.post-published" true
+    fi
 }
 
 job_media() {
@@ -514,7 +519,7 @@ remove_completed_job() {
     while IFS= read -r id; do
         read -r extension < "$job/parts/$id.published.extension" || return 1
         part_committed "$job" "$id" "$extension" || return 1
-        publish_chat "$job" "$(part_destination "$job" "$id" "$extension")" || return 1
+        publish_sidecars "$job" "$id" "$(part_destination "$job" "$id" "$extension")" || return 1
     done < <(part_ids "$job")
     retired="${job%/*}/.completed.${job##*/}"
     if [[ -f "$job/segment-index" ]]; then
@@ -532,10 +537,10 @@ cleanup_retired_job() {
 }
 
 new_recording_job() {
-    local title="$1" author="$2" stream_id="$3" stem season episode
+    local title="$1" author="$2" stream_id="$3" recorded_at="${4:-$(date +%s)}" stem season episode
     RECORDING_JOB=$(mktemp -d "$WORK_DIR/active/recording.XXXXXXXX") || return 1
-    season=$(date +%Y%m)
-    episode=$(date +%d%H)
+    season=$(date -d "@$recorded_at" +%Y%m)
+    episode=$(date -d "@$recorded_at" +%d%H)
     # Reserve bytes for extension and a unique recording identifier; truncate
     # only the title, without cutting a UTF-8 codepoint in half.
     stem=$(python3 - "$author" "$title" "$season" "$episode" "$MODE" \
@@ -563,12 +568,13 @@ PY
         printf '%s\0' "$title" > "$RECORDING_JOB/title" &&
         printf '%s\n' "$season" > "$RECORDING_JOB/season" &&
         printf '%s\n' "$(date +%s)" > "$RECORDING_JOB/started-at" &&
-        date +%m/%d/%Y > "$RECORDING_JOB/recorded-date" &&
+        date -d "@$recorded_at" +%m/%d/%Y > "$RECORDING_JOB/recorded-date" &&
+        printf '%s\0' "${STREAM_CATEGORY:-}" > "$RECORDING_JOB/category" &&
         printf '%s\n' "${REMUX:-false}" > "$RECORDING_JOB/remux-required" &&
         printf '%s\n' "${UPLOAD:-false}" > "$RECORDING_JOB/upload-required" &&
         printf '%s\n' "${ENCODE:-false}" > "$RECORDING_JOB/encode-required" &&
         printf '%s\n' "$(if [[ "$MODE" == twitch ]]; then printf '%s' "${TWITCH_AUDIO_TRACK:-all}"; else printf all; fi)" > "$RECORDING_JOB/audio-track" &&
-        write_state "$WORK_DIR/active.job" "$RECORDING_JOB"
+        { [[ "${REGISTER_ACTIVE_RECORDING:-true}" != true ]] || write_state "$WORK_DIR/active.job" "$RECORDING_JOB"; }
 }
 
 advance_job() {
@@ -613,6 +619,8 @@ recover_completed_recordings() {
         python3 "$(dirname -- "${BASH_SOURCE[0]}")/session_recovery.py" recover-all "$WORK_DIR" || true
     fi
     while IFS= read -r -d '' job; do
+        # The catch-up CLI owns its completion handoff and duplicate-VOD state.
+        [[ ! -f "$job/vod-id" ]] || continue
         if [[ -f "$job/completed" ]]; then
             advance_job "$job" normalize || log_failure 'Completed recording pending' "$job"
         elif [[ "${AUTO_RECOVER_INTERRUPTED:-false}" == true && ! -f "$job/segment-index" ]]; then
@@ -689,6 +697,8 @@ run_queue_once() (
 run_worker() {
     local stage="$1" handler="$2"
     pipeline_init || return 1
+    # Bash defers this trap until its foreground worker has flushed and exited.
+    trap 'exit 0' TERM INT
     while true; do
         run_queue_once "$stage" "$handler" || return 1
         [[ "${WORKER_ONCE:-false}" != true ]] || return 0

@@ -115,7 +115,7 @@ record_stream() {
     if [[ "$MODE" == twitch ]]; then url="twitch.tv/$CHANNEL"; else url="kick.com/$CHANNEL"; fi
     stream_url="https://$url"
     if public_notifications_enabled; then
-        notify_discord "**$CHANNEL is LIVE!**"$'\n'"Title: $title" "$title" "$stream_url" "$author" || true
+        notify_discord "**$CHANNEL is LIVE!**"$'\n'"Title: $title" "$title" "$stream_url" "$author" live || true
     fi
     # Keep the original independent of normalization failures and decoder exits.
     output="$RECORDING_JOB/capture.bin"
@@ -123,9 +123,9 @@ record_stream() {
     if [[ "${YOUTUBE_SPLITTING:-false}" == true ]]; then
         if python3 "$(dirname -- "${BASH_SOURCE[0]}")/segment_capture.py" capture "$RECORDING_JOB" -- \
             streamlink "${STREAMLINK_ARGS[@]}" --stdout "$url" "$quality"; then
-            python3 "$(dirname -- "${BASH_SOURCE[0]}")/chat_archive.py" session \
+            python3 "$(dirname -- "${BASH_SOURCE[0]}")/publication.py" session \
                 "$WORK_DIR/sessions/${RECORDING_JOB##*/}" "$STORAGE_DIR" || \
-                log_failure 'Broadcast chat publication pending; audit worker will retry' "$RECORDING_JOB"
+                log_failure 'Broadcast sidecar/cloud publication pending; audit worker will retry' "$RECORDING_JOB"
             notify_recording_completed "$WORK_DIR/sessions/${RECORDING_JOB##*/}" || true
             write_state "$WORK_DIR/sessions/${RECORDING_JOB##*/}/broadcast-finished" true || \
                 log_failure 'Broadcast completion acknowledgment pending' "$RECORDING_JOB"
@@ -166,7 +166,7 @@ record_stream() {
 }
 
 check_stream() {
-    local json='' live title author stream_id status started
+    local json='' live title author stream_id status started category
     if refresh_token; then
         if json=$(fetch_stream_info); then
             :
@@ -206,7 +206,8 @@ check_stream() {
         fi
     fi
     set_channel_status "recording"
-    record_stream "$title" "$author" "$stream_id" || return 1
+    category=$(jq -r '(.data[0].game_name // .data[0].category.name // "")' <<< "$json") || category=''
+    STREAM_CATEGORY="$category" record_stream "$title" "$author" "$stream_id" || return 1
     set_channel_status "monitoring"
 }
 
@@ -222,6 +223,7 @@ download_main() {
     # One monitor owns active recordings per channel.
     exec 9> "$WORK_DIR/download.lock"
     flock -n 9 || return 1
+    trap 'set_channel_status offline; exit 0' TERM INT
     # Old jobs remain available for recovery, but cannot describe this monitor.
     rm -f -- "$WORK_DIR/active.job"
     set_channel_status "monitoring"

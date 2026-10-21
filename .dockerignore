@@ -4,6 +4,11 @@
 !LICENSE
 !download.sh
 !capture.py
+!content.py
+!cloud_sync.py
+!publication.py
+!validate_content.py
+!catchup_vod.sh
 !chat_archive.py
 !status_server.py
 !dashboard.html

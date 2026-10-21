@@ -19,7 +19,7 @@ validate_environment() {
     if [[ -n "${WINDOWS_SAFE_FILENAME:-}" && -z "${WINDOWS_SAFE_FILENAMES:-}" ]]; then
         export WINDOWS_SAFE_FILENAMES="$WINDOWS_SAFE_FILENAME"
     fi
-    for name in UPLOAD ENCODE ENCODE_FALLBACK_CPU ARCHIVE_CHAT HTTP_STATUS_ENABLED REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED WINDOWS_SAFE_FILENAMES; do
+    for name in UPLOAD ENCODE ENCODE_FALLBACK_CPU ARCHIVE_CHAT STREAM_CHAPTERS HTTP_STATUS_ENABLED REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED WINDOWS_SAFE_FILENAMES; do
         value="${!name:-false}"
         case "$value" in true|false) ;; *) printf 'ERROR: %s must be true or false.\n' "$name" >&2; errors=1 ;; esac
         export "$name=$value"
@@ -35,6 +35,12 @@ validate_environment() {
     export NOTIFICATION_ON_ERROR="$value" DISCORD_NOTIFY_ON_ERROR="$value"
     export NOTIFICATION_PROVIDER="${NOTIFICATION_PROVIDER:-discord}"
     python3 "$(dirname -- "${BASH_SOURCE[0]}")/notifications.py" validate || errors=1
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/validate_content.py" || errors=1
+    value="${CHAPTER_POLL_INTERVAL:-60}"
+    if [[ ! "$value" =~ ^[1-9][0-9]{0,5}$ ]] || (( value < 15 )); then
+        echo 'ERROR: CHAPTER_POLL_INTERVAL must be between 15 and 999999 seconds.' >&2; errors=1
+    fi
+    export CHAPTER_POLL_INTERVAL="$value"
     value="${TWITCH_AUDIO_TRACK:-all}"
     case "$value" in all|1|2) ;; *) echo 'ERROR: TWITCH_AUDIO_TRACK must be all, 1, or 2.' >&2; errors=1 ;; esac
     export TWITCH_AUDIO_TRACK="$value"
@@ -229,7 +235,22 @@ entrypoint_main() {
     chmod 666 /dev/stdout /dev/stderr
     initialize_dbus
     printf 'Starting application as %s (UID: %s)...\n' "$USER_NAME" "$(id -u "$USER_NAME")"
-    exec gosu "$USER_NAME" "$@"
+    run_application "$@"
+}
+
+run_application() {
+    local application_pid application_status=0
+    # Explicit stdin redirection preserves `docker run -i ... bash -s` behavior.
+    gosu "$USER_NAME" "$@" <&0 &
+    application_pid=$!
+    trap 'kill -TERM "$application_pid" 2>/dev/null || true' TERM INT
+    # A trapped signal interrupts wait before Supervisor has stopped its workers.
+    while true; do
+        if wait "$application_pid"; then application_status=0; else application_status=$?; fi
+        kill -0 "$application_pid" 2>/dev/null || break
+    done
+    trap - TERM INT
+    return "$application_status"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

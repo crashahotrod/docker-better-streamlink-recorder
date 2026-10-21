@@ -8,9 +8,10 @@ import subprocess
 import sys
 
 from chat_archive import ChatArchive
+from content import ChapterPoller
 
 
-def stop(process, grace=10):
+def stop(process, grace=90):
     """Allow Streamlink to flush/close files before escalating a stuck capture."""
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
         try:
@@ -18,14 +19,14 @@ def stop(process, grace=10):
         except ProcessLookupError:
             break
         try:
-            process.wait(timeout=grace)
+            process.wait(timeout=grace if sig == signal.SIGINT else 5)
             break
         except subprocess.TimeoutExpired:
             continue
     process.wait()
 
 
-def capture(directory, command, minimum_gb, interval=5, usage=shutil.disk_usage, pass_fds=(), chat=None):
+def capture(directory, command, minimum_gb, interval=5, usage=shutil.disk_usage, pass_fds=(), chat=None, chapters=None):
     process = None
 
     def interrupted(signum, _frame):
@@ -35,6 +36,8 @@ def capture(directory, command, minimum_gb, interval=5, usage=shutil.disk_usage,
     try:
         if chat:
             chat.start()
+        if chapters:
+            chapters.start()
         process = subprocess.Popen(command, start_new_session=True, pass_fds=pass_fds)
         while True:
             if minimum_gb and usage(directory).free <= minimum_gb * 1024 ** 3:
@@ -60,6 +63,8 @@ def capture(directory, command, minimum_gb, interval=5, usage=shutil.disk_usage,
                 stop(process)
             if chat:
                 chat.stop()
+            if chapters:
+                chapters.stop()
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
@@ -76,4 +81,4 @@ if __name__ == '__main__':
     except OSError:
         writer_fds = ()
     raise SystemExit(capture(pathlib.Path(directory), command, int(os.environ.get('MIN_FREE_SPACE_GB') or '0'),
-                             pass_fds=writer_fds, chat=ChatArchive(directory)))
+                             pass_fds=writer_fds, chat=ChatArchive(directory), chapters=ChapterPoller(directory)))

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Disk-backed, downstream stream-copy segmentation of continuous Streamlink output."""
 import argparse
+import contextlib
 import csv
 try:
     import fcntl
@@ -22,7 +23,9 @@ import time
 
 import media
 from notifications import atomic_json, enqueue, lock
-from chat_archive import ChatArchive, publish_session
+from chat_archive import ChatArchive
+from content import ChapterPoller
+from publication import publish_session
 
 GIB = 1024 ** 3
 MAX_DURATION = 43170  # 11h59m30s; leave headroom below YouTube's 12-hour limit.
@@ -56,18 +59,24 @@ def require_space(directory, active_bytes=0, usage=shutil.disk_usage):
         raise LowSpace(f'Scratch reserve reached; need {required} bytes including processing headroom')
 
 
+def stop_processes(processes, grace=90):
+    processes = [process for process in processes if process is not None and process.poll() is None]
+    # Signal every stream writer first; all share one flush deadline.
+    for process in processes:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGINT)
+    deadline = time.monotonic() + grace
+    for process in processes:
+        try:
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+
+
 def stop_process(process):
-    if process is None:
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
+    stop_processes([process])
 
 
 class Source:
@@ -354,6 +363,7 @@ class Capture:
     def run(self, source=None):
         consumer = None
         chat = ChatArchive(self.session)
+        chapters = ChapterPoller(self.session)
         original_handlers = {}
 
         def interrupted(_signum, _frame):
@@ -366,6 +376,7 @@ class Capture:
             self.guard()
             if source is None:
                 chat.start()
+                chapters.start()
             self.source = source or Source(self.session / 'capture.bin', self.command, self.guard,
                                            pass_fds=(self.writer_lock.fileno(),))
             consumer = threading.Thread(target=self.feed, daemon=True)
@@ -398,15 +409,17 @@ class Capture:
             return 1
         finally:
             self.ending = True
+            for sig in original_handlers:
+                signal.signal(sig, signal.SIG_IGN)
+            stop_processes(([self.source.process] if self.source else []) +
+                           [epoch['process'] for epoch in self.epochs])
             if self.source:
-                stop_process(self.source.process)
                 if self.source.thread:
                     self.source.thread.join(timeout=6)
-            for epoch in self.epochs:
-                stop_process(epoch['process'])
             if consumer:
                 consumer.join(timeout=6)
             chat.stop()
+            chapters.stop()
             if not self.success:
                 self.save('interrupted')
             (self.work / 'active.job').unlink(missing_ok=True)

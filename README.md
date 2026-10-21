@@ -1,7 +1,7 @@
 # docker-better-streamlink-recorder
 
 Record Twitch and Kick livestreams with Streamlink, with optional MP4 remuxing,
-H.264 encoding, YouTube uploads, and Discord go-live notifications.
+H.264 encoding, YouTube uploads, rclone cloud archives, chapters, and notifications.
 
 Published image: https://hub.docker.com/r/crashahotrod/docker-better-streamlink-recorder
 
@@ -33,6 +33,8 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `STREAMLINK_EXTRA_ARGS` | Unset | Extra arguments passed to Streamlink, with shell-style quoting (e.g. `--twitch-low-latency`). See recipes below. |
 | `TWITCH_AUDIO_TRACK` | `all` | Preserve all delivered audio streams, or select the first (`1`) or second (`2`) audio stream with FFmpeg. Twitch jobs only; selection is saved with each recording. |
 | `ARCHIVE_CHAT` | `false` | Archive Twitch IRC / Kick WebSocket chat while recording, and publish `.chat.json` sidecars. |
+| `STREAM_CHAPTERS` | `false` | Poll live titles/categories and publish chapter sidecars, MP4 chapters, and YouTube description timestamps. |
+| `CHAPTER_POLL_INTERVAL` | `60` | Seconds between metadata polls during capture, integer from `15` to `999999`. |
 | `TWITCH_CHAT_USERNAME` | Unset | Optional Twitch chat account login; required with `TWITCH_CHAT_TOKEN`. |
 | `TWITCH_CHAT_TOKEN` | Unset | Optional IRC user token with `chat:read`; anonymous read-only chat is attempted when unset. Separate from the Streamlink playback token. |
 | `KICK_CHATROOM_ID` | Auto-detected | Optional positive chatroom ID; avoids Kick's channel lookup when it is blocked by bot protection. |
@@ -59,12 +61,16 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `YOUTUBE_TAGS` | Unset | Optional comma-separated tags for uploaded videos. Supports template tokens (e.g. `{channel}`, `{mode}`, `{part}`). |
 | `YOUTUBE_CATEGORY_ID` | Unset | Optional YouTube numeric category ID (e.g. `20` for Gaming). |
 | `YOUTUBE_DESCRIPTION` | Unset | Custom description template (defaults to `Uploaded Automatically by <UPLOAD_BOT_NAME>`). Supports placeholders `{channel}`, `{mode}`, `{title}`, `{date}`, `{part_title}`, `{part}`, `{count}`, `{stream_url}`, `{bot_name}`. |
-| `YOUTUBE_THUMBNAIL_TIMESTAMP` | `00:01:00` | Offset (HH:MM:SS) to extract a video frame via FFmpeg as the YouTube video thumbnail. |
+| `YOUTUBE_THUMBNAIL_TIMESTAMP` | `20%` | Start thumbnail sampling at this percentage, `HH:MM:SS`, or number of seconds; choose a representative frame from the next 30 frames. |
 | `CHECK_INTERVAL` | `30` | Seconds between channel checks; integer of at least `5`. |
 | `MIN_FREE_SPACE_GB` | `0` | Minimum free disk space in GiB on scratch/storage before recording. Unsplit captures check scratch every five seconds and stop with SIGINT at the threshold (`0` disables these checks). |
 | `RETENTION_DAYS` | `0` | Prune expired MP4/TS/MKV recordings and their matching sidecars from storage (`0` disables pruning). |
 | `QUARANTINE_RETENTION_DAYS` | `7` | Permanently delete whole quarantined jobs N days after entering quarantine (`0` keeps them indefinitely). Runs every 30 seconds, independently of publication. Legacy jobs use their directory modification time. |
 | `POST_PUBLISH_COMMAND` | Unset | Custom shell command evaluated when a recording part is published. |
+| `RCLONE_REMOTE` | Unset | Optional archive destination, e.g. `b2:my-bucket/archives` or `s3:my-bucket/archives`. Preserves channel/season paths. |
+| `RCLONE_CONFIG` | `/config/rclone.conf` when present | Optional rclone configuration file. Rclone's standard environment credentials are also supported. |
+| `RCLONE_BWLIMIT` | Unset | Optional upload bandwidth limit, e.g. `8M` or `500K` (bytes per second). |
+| `RCLONE_RETRIES` | `3` | Rclone high-level retries per operation, integer from `1` to `10`; failed pipeline stages also retry normally. |
 | `DISCORD_WEBHOOK_URL` | Unset | Optional Discord webhook for rich embed go-live and upload-complete alerts. Notification failures do not stop recording. |
 | `NOTIFICATION_PROVIDER` | `discord` | `discord`, `webhook`, `ntfy`, `gotify`, or `telegram`. Selects the outbox delivery adapter. |
 | `NOTIFICATION_URL` | Required for webhook/ntfy/gotify | Full HTTP(S) delivery endpoint; ntfy topic URL or Gotify `/message` URL. |
@@ -73,13 +79,15 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `TELEGRAM_BOT_TOKEN` | Required for Telegram | Telegram bot token. |
 | `TELEGRAM_CHAT_ID` | Required for Telegram | Telegram destination chat ID, including the minus sign for groups. |
 | `NOTIFICATION_ON_ERROR` | `DISCORD_NOTIFY_ON_ERROR` | Provider-independent switch for operational alerts; public live/upload events remain enabled. |
-| `HTTP_STATUS_ENABLED` | `false` | Start the read-only JSON endpoint and dashboard HTTP worker. |
+| `HTTP_STATUS_ENABLED` | `false` | Start the dashboard, JSON status, and Prometheus `/metrics` HTTP worker. |
 | `HTTP_STATUS_HOST` | `0.0.0.0` | HTTP bind address inside the container. |
 | `HTTP_STATUS_PORT` | `8080` | HTTP listening port, integer from `1024` to `65535`. |
 | `DISCORD_MONITOR_WEBHOOK_URL` | Unset | Dedicated webhook for the persistent status message and operational alerts. Only operational alerts fall back to `DISCORD_WEBHOOK_URL`. |
 | `DISCORD_NOTIFY_ON_ERROR` | `true` | Queue operational alerts, including recording completion, disk warnings, quarantine, and quota errors. Does not disable a dedicated persistent status message. |
 | `DISCORD_USERNAME` | `Streamlink (<CHANNEL>)` | Optional username attribution for Discord webhook notifications. |
 | `DISCORD_AVATAR_URL` | Unset | Optional avatar image URL for Discord webhook notifications. |
+| `DISCORD_PING_ROLE_ID` | Unset | Allow and prepend this role mention on go-live alerts only; other role mentions and `@everyone` remain disabled. |
+| `DISCORD_THREAD_ID` | Unset | Send Discord webhook messages and persistent status edits to this existing thread. |
 | `RECORDER_STALE_SECONDS` | `180` | Report an error after this many seconds without monitor progress or capture writes. Monitoring also allows `CHECK_INTERVAL` for the scheduled poll wait. Must be at least `150` to allow bounded API requests. |
 | `TWITCH_USER_TOKEN` | Unset | Optional user OAuth token for authenticated Twitch access, such as subscribed-channel ad handling. |
 
@@ -518,6 +526,93 @@ receive times are approximate context rather than frame-aligned subtitles,
 particularly when ads or network stalls interrupt video. Interrupted JSONL stays
 with the capture for recovery. Local sidecars are not uploaded to YouTube.
 
+## Thumbnails and live chapters
+
+YouTube thumbnails now sample at `20%` of each normalized part, using FFmpeg's
+`thumbnail=30` filter after resizing to at most 1280x720. Set
+`YOUTUBE_THUMBNAIL_TIMESTAMP=00:30:00` for a fixed offset instead. An explicit
+offset past the end of a short recording falls back to 20%. The selected image
+is also published as `<media-stem>.thumbnail.jpg`. Thumbnail generation follows
+`YOUTUBE_UPLOAD_THUMBNAIL` and runs when uploading to YouTube. Sampling later in
+the recording reduces countdown thumbnails; it does not recognize countdown text.
+
+Enable `STREAM_CHAPTERS=true` to collect the initial title/category at `00:00:00`
+and record changes every `CHAPTER_POLL_INTERVAL` seconds. The collector writes
+`chapters.json` and `chapters.txt` alongside the active capture. API failures keep
+the last successful metadata and retry without interrupting video. Polling adds
+API requests only during recording.
+
+Publication embeds chapters in the final MP4 without re-encoding video/audio,
+writes `<media-stem>.chapters.txt`, and appends timestamps to YouTube descriptions
+within the 5,000-character limit. Each split part gets rebased timestamps and its
+opening category. Segmented sessions also retain a full-broadcast chapter sidecar.
+Labels include both category and title when available. Detection times are
+approximate wall-clock offsets; ads, stalls, and polling delay can shift their
+alignment with video. Twitch VOD catch-up does not poll the channel's current live
+metadata. YouTube controls whether its player displays description chapters.
+
+## Cloud archives with rclone
+
+The image includes rclone v1.75.2, built with the pinned Go toolchain. Set
+`RCLONE_REMOTE=b2:my-bucket/archives` and provide
+a readable `/config/rclone.conf` in the existing config volume, or use rclone's
+environment configuration for S3/B2/Drive and other supported backends. For example:
+
+```yaml
+environment:
+  - RCLONE_REMOTE=s3:my-bucket/archives
+  - RCLONE_BWLIMIT=8M
+  - RCLONE_RETRIES=3
+```
+
+After verified local publication, media and available thumbnail/chat/chapter
+sidecars are copied to `.pending/<sha256>/<channel>/<season>/<filename>` under
+the remote, then committed with remote `rclone moveto`. The local archive is
+always copied and remains available. Remote rename atomicity depends on the
+backend; this is a per-file commit, not a multi-file transaction. `--immutable`
+refuses to replace a different existing object, and successful copies receive
+durable receipts so retries resume without uploading completed objects again.
+Interrupted uploads may leave remote `.pending` objects for later cleanup.
+
+Cloud errors retain the scratch job and its original capture for the normal
+retry/quarantine path. Scratch retirement requires remote publication to succeed.
+Local `RETENTION_DAYS` pruning does not delete remote objects; configure the
+remote provider's lifecycle policy separately. Setting `UPLOAD=false` supports
+cloud-only destinations while retaining the normal local archive.
+
+## Catch up a past Twitch VOD
+
+With the normal recorder/workers running and the same scratch, storage, config,
+and channel credentials, queue one VOD with:
+
+```sh
+docker compose run --rm --no-deps streamlinkrecorder bash /etc/streamlink/tools/catchup_vod.sh 1234567890
+```
+
+The CLI verifies the VOD belongs to `CHANNEL`, downloads it with Streamlink, and
+feeds the existing normalize/upload/encode/publish workers. Naming and season
+use the VOD's original broadcast date. Existing upload, encoding, audio-selection,
+cloud, and retention settings apply. It leaves an ongoing live capture's status
+pointer alone; allow enough scratch space for both downloads. The VOD must remain
+accessible, and playback permissions still apply.
+
+Each VOD ID has a persistent lock/state under `<work_dir>/vods`. Re-running a
+queued ID does not duplicate it. Failed/interrupted attempts retain their job
+and block a new download until inspected. Use the existing offline recovery
+procedure for the saved capture, or deliberately remove that VOD's `.state` and
+`.job` markers to authorize a fresh attempt after handling the original. Live
+chat and live metadata polling are disabled for past VODs. This utility does not
+automatically discover missed broadcasts or backfill historical chat.
+
+## Graceful container shutdown
+
+The Compose sample sets `stop_grace_period: 120s`. PID 1 forwards SIGTERM to
+Supervisor and waits for its workers. Capture controllers interrupt Streamlink
+and FFmpeg with SIGINT, allowing up to 90 seconds for writer flush before
+escalation. Supervisor allows 115 seconds for capture/encode worker shutdown.
+Unfinished jobs retain their original data for recovery. For plain Docker use
+`docker stop --time 120 <container>` to grant the same shutdown window.
+
 ## Status monitoring and notifications
 
 ### HTTP dashboard
@@ -541,6 +636,36 @@ The server only exposes these fixed read-only routes, with no file browsing or
 control actions. It has no built-in authentication; the example binds the host
 port to loopback. Use your existing trusted network or authenticated reverse
 proxy for remote access. Docker health checks include the HTTP worker when enabled.
+
+### Prometheus metrics
+
+The same server exposes `/metrics` in Prometheus text format. It reports
+`streamlink_channel_status` (offline=0, monitoring=1, recording=2, error=3),
+`streamlink_active_duration_seconds`, `streamlink_active_bytes_written`,
+`streamlink_queue_depth`, `streamlink_scratch_available_bytes`, and
+`streamlink_storage_available_bytes`. All carry `channel`/`mode` labels; queue
+depth also has `stage` (`active`, `normalize`, `upload`, `encode`, `publish`,
+`quarantine`). Values come from the same periodically refreshed status snapshot.
+
+For Prometheus on the same Docker network:
+
+```yaml
+scrape_configs:
+  - job_name: streamlink
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["streamlinkrecorder:8080"]
+```
+
+### Discord role mentions and threads
+
+Set `DISCORD_PING_ROLE_ID=123456789` to prepend `<@&123456789>` to go-live
+alerts and allow only that role ID in `allowed_mentions`. Upload notices,
+operational alerts, and status refreshes do not ping. Discord role permissions
+still apply. `DISCORD_THREAD_ID=987654321` routes creates and edits to the
+specified thread, preserving other webhook query parameters. Changing the
+thread creates a new persistent status message there. Thread and role settings
+apply only to the Discord notification provider.
 
 ### Notification providers
 
@@ -617,7 +742,7 @@ Update dashboards that previously read the shared root `status.json` path.
 - `recorder_heartbeat_at`: Last monitor progress timestamp. During a long capture, recent file writes establish recording activity instead of the monitor heartbeat.
 - `active_capture`: Details of an active or stalled recording, or `null` when the recorder is stopped or has no active job. `last_growth_at` is the capture's last write time (the job creation time before the first bytes arrive); `stalled` indicates no writes for `RECORDER_STALE_SECONDS`. During continuous YouTube segmentation (`YOUTUBE_SPLITTING=true`), `segment_index` tracks the 1-based child segment number, and `total_duration_seconds` / `total_duration_human` track the total broadcast elapsed time.
 - `queues`: Real-time job counts across all pipeline stages.
-- `disk_space`: Available gigabytes on the scratch and storage filesystems.
+- `disk_space`: Available gigabytes and `scratch_available_bytes` / `storage_available_bytes` on the two filesystems.
 
 The Docker healthcheck requires the download, normalization, publication, status,
 notification and source-audit workers, plus upload/encode workers enabled by their flags, to
@@ -643,7 +768,7 @@ webhook creates a status message at the new destination. A primary webhook alone
 never enables the persistent message; it receives public events and, when enabled,
 operational-alert fallback.
 
-Payloads disable mentions and truncate text to Discord's individual and combined
+Payloads disable mentions except for a configured role on go-live alerts, and truncate text to Discord's individual and combined
 embed limits. HTTP 429 responses defer requests using Discord's `Retry-After` and
 `retry_after` values, with cooldown state shared by webhook across the scratch
 volume. Other event delivery failures retry with backoff from 30 seconds to
@@ -677,8 +802,11 @@ Expected negative tests print retained-input, validation, and permission
 errors; a passing suite ends in `PASS`/`OK`. CI saves failed media diagnostics.
 `tests/test_media_normalization.py` covers MP4 periods, timing, completeness,
 and retained captures. With Streamlink installed it also tests local HLS capture
-through every processing route. Run the full opening regression with `TEST_MEDIA_INTRO_SECONDS=90 TEST_MEDIA_MAIN_SECONDS=6 python3 tests/test_media_normalization.py`.
-The default uses a two-second opening for fast feedback. Run
+through every processing route. That HLS regression alone generates a 90-second
+opening and six-second main period; other normalization tests use two-second and
+one-second fixtures. Override these separately with `TEST_HLS_INTRO_SECONDS` /
+`TEST_HLS_MAIN_SECONDS` and `TEST_MEDIA_INTRO_SECONDS` / `TEST_MEDIA_MAIN_SECONDS`.
+Run `bash tests/run.sh --lint-only` for syntax and ShellCheck without media tests. Run
 `python3 tests/benchmark_media.py --output /tmp/new-benchmark.json` for the eight-hour
 tiny-video benchmark. Tests never use live uploads or service credentials.
 
@@ -690,8 +818,34 @@ pinned in `build/uploader-modules.txt`; its upstream tests run during the build.
 Build tools stay in separate build stages. Keep persistent
 scratch/storage volumes when upgrading; do not prune pending or quarantined jobs.
 
-CI checks workflows, the complete amd64 suite, an offline dependency scan, and
-ARM64/ARMv7 image smoke tests before publishing. Version tags such as `v1.0.0`
+CI starts lint/configuration checks and three architecture builds in parallel:
+
+| Architecture | Runner | Verification |
+| --- | --- | --- |
+| AMD64 | `ubuntu-24.04` | Container startup/flag checks, permissions, and the complete recording suite once inside the release image. |
+| ARM64 | `ubuntu-24.04-arm` | Native dependency and real media publication smoke checks. |
+| ARMv7 | `ubuntu-24.04` with QEMU | Dependency and real media publication smoke checks under emulation. |
+
+Each image receives an offline dependency scan. A shared composite action at
+`.github/actions/build-recorder/action.yml` restores architecture-specific
+BuildKit layers and Go module/compiler caches. The Go caches are explicitly
+injected into and extracted from BuildKit cache mounts so they survive hosted
+runner replacement. Both image CI and dependency automation use these caches.
+Cold dependency builds still take longer than warm source-only builds.
+
+On pushes and manual runs, each verified image is uploaded to Docker Hub and
+GHCR with a run-specific `ci-<run>-<attempt>-<architecture>` staging tag. Small
+digest receipts record the run, commit, architecture, and registry digests. After
+all lint, test, and scan jobs pass, the final job assembles the published
+multi-architecture tags from those exact digests without rebuilding. Pull
+requests build/test/scan without registry logins or image publication. Successful
+platform receipts can be reused when retrying failed jobs in the same run;
+receipts from other commits/runs are rejected. Digest artifacts expire after one
+day, so later retries may require rerunning all image jobs. Existing registry
+cleanup rules also apply to staging images. Superseded branch/PR runs are
+cancelled; version-tag runs are allowed to finish.
+
+Version tags such as `v1.0.0`
 also publish `1.0.0` and `1.0`
 image tags. Use a versioned tag or digest when you need a fixed deployed version.
 This repository's `latest` tag is updated by the default release flow.

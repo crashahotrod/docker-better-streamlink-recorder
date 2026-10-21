@@ -71,6 +71,7 @@ while True:
                                     subprocess.TimeoutExpired('capture', 10), 0, 0]
         with mock.patch.object(capture.os, 'killpg') as kill:
             capture.stop(process)
+        self.assertEqual(90, process.wait.call_args_list[0].kwargs['timeout'])
         self.assertEqual(kill.call_args_list, [mock.call(123, signal.SIGINT),
                                               mock.call(123, signal.SIGTERM),
                                               mock.call(123, signal.SIGKILL)])

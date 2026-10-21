@@ -7,6 +7,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import time
@@ -20,6 +21,9 @@ PROVIDERS = ('discord', 'webhook', 'ntfy', 'gotify', 'telegram')
 
 
 def validate_config(environ=os.environ):
+    for name in ('DISCORD_PING_ROLE_ID', 'DISCORD_THREAD_ID'):
+        if environ.get(name) and not re.fullmatch(r'[1-9][0-9]{0,19}', environ[name]):
+            raise ValueError(f'{name} must be a numeric Discord ID')
     provider = environ.get('NOTIFICATION_PROVIDER', 'discord')
     if provider not in PROVIDERS:
         raise ValueError('NOTIFICATION_PROVIDER must be discord, webhook, ntfy, gotify, or telegram')
@@ -144,9 +148,14 @@ def clip(value, limit):
     return str(value).encode('utf-16-le')[:max(0, limit) * 2].decode('utf-16-le', 'ignore')
 
 
-def sanitize(payload):
+def sanitize(payload, ping_role_id=None):
     payload = json.loads(json.dumps(payload))
     payload['allowed_mentions'] = {'parse': []}
+    if ping_role_id:
+        if not re.fullmatch(r'[1-9][0-9]{0,19}', str(ping_role_id)):
+            raise ValueError('Invalid role ID')
+        payload['allowed_mentions']['roles'] = [str(ping_role_id)]
+        payload['content'] = f"<@&{ping_role_id}> {payload.get('content', '')}"
     if 'content' in payload:
         payload['content'] = clip(payload['content'], 2000)
     if 'username' in payload and payload['username']:
@@ -197,10 +206,12 @@ def sanitize(payload):
     return payload
 
 
-def webhook_url(webhook, message_id=None):
+def webhook_url(webhook, message_id=None, thread_id=None):
     parts = urllib.parse.urlsplit(webhook.strip())
     query = dict(urllib.parse.parse_qsl(parts.query))
     query.pop('wait', None)
+    if thread_id:
+        query['thread_id'] = str(thread_id)
     path = parts.path.rstrip('/')
     if message_id:
         path += '/messages/' + urllib.parse.quote(str(message_id), safe='')
@@ -214,11 +225,11 @@ def webhook_key(webhook):
     return hashlib.sha256((parts.netloc + parts.path.rstrip('/')).encode()).hexdigest()
 
 
-def enqueue(work, target, payload):
+def enqueue(work, target, payload, kind=''):
     if target not in ('public', 'monitor'):
         raise ValueError('Invalid notification target')
     path = pathlib.Path(work) / 'notifications' / f'event.{time.time_ns()}.{uuid.uuid4().hex}.json'
-    atomic_json(path, {'target': target, 'payload': sanitize(payload), 'attempts': 0, 'retry_at': 0})
+    atomic_json(path, {'target': target, 'payload': sanitize(payload), 'kind': kind, 'attempts': 0, 'retry_at': 0})
     return path
 
 
@@ -275,7 +286,7 @@ class Worker:
             return ''
         return self.environ.get('DISCORD_MONITOR_WEBHOOK_URL') or primary
 
-    def request(self, webhook, payload, message_id=None):
+    def request(self, webhook, payload, message_id=None, kind=''):
         """Return status, body, earliest next attempt. Never sleep on rate limits."""
         key = webhook_key(webhook)
         rate_file = self.rate_dir / (key + '.json')
@@ -294,8 +305,9 @@ class Worker:
                     out_payload['username'] = username
                 if avatar_url and 'avatar_url' not in out_payload:
                     out_payload['avatar_url'] = avatar_url
-            request = urllib.request.Request(webhook_url(webhook, message_id),
-                data=json.dumps(sanitize(out_payload)).encode(),
+            role = self.environ.get('DISCORD_PING_ROLE_ID') if kind == 'live' and not message_id else None
+            request = urllib.request.Request(webhook_url(webhook, message_id, self.environ.get('DISCORD_THREAD_ID')),
+                data=json.dumps(sanitize(out_payload, role)).encode(),
                 headers={'Content-Type': 'application/json', 'User-Agent': 'StreamlinkRecorder/1.0'},
                 method='PATCH' if message_id else 'POST')
             provider = self.environ.get('NOTIFICATION_PROVIDER', 'discord')
@@ -363,7 +375,7 @@ class Worker:
             if not webhook:
                 path.unlink()
                 continue
-            code, _, retry_at = self.request(webhook, event['payload'])
+            code, _, retry_at = self.request(webhook, event['payload'], kind=event.get('kind', ''))
             if 200 <= code < 300:
                 path.unlink()
             elif code in (400, 401, 404):
@@ -392,7 +404,7 @@ class Worker:
                 state['id'] = (self.work / 'status_message.id').read_text().strip()
             except OSError:
                 pass
-        identity = hashlib.sha256(webhook.encode()).hexdigest()
+        identity = hashlib.sha256(webhook_url(webhook, thread_id=self.environ.get('DISCORD_THREAD_ID')).encode()).hexdigest()
         if state.get('webhook') and state['webhook'] != identity:
             state = {'webhook': identity}
         state['webhook'] = identity
@@ -438,7 +450,7 @@ def main():
         return
     work = pathlib.Path(os.environ.get('SCRATCH_ROOT', '/etc/streamlink/scratch')) / os.environ['MODE'] / os.environ['CHANNEL'] / 'queue-v2'
     if len(sys.argv) > 1 and sys.argv[1] == 'enqueue':
-        enqueue(work, sys.argv[2], json.load(sys.stdin))
+        enqueue(work, sys.argv[2], json.load(sys.stdin), sys.argv[3] if len(sys.argv) > 3 else '')
         return
     worker = Worker(work)
     while True:

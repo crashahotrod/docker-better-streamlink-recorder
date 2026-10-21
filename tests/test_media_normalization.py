@@ -380,20 +380,28 @@ class MediaNormalizationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('streamlink'), 'Streamlink HLS capture runs in the built image')
     def test_real_streamlink_hls_capture(self):
+        # This boundary regression needs a long opening for Streamlink/FFmpeg
+        # probing. Other tests keep their fast two-second fixtures.
+        hls_intro = int(os.getenv('TEST_HLS_INTRO_SECONDS', '90'))
+        hls_main = int(os.getenv('TEST_HLS_MAIN_SECONDS', '6'))
+        fixtures = self.job / 'hls-fixtures'
+        subprocess.run(['python3', str(ROOT / 'tests/generate_media_fixtures.py'),
+                        '--intro-seconds', str(hls_intro), '--main-seconds', str(hls_main),
+                        '--output', str(fixtures)], check=True)
         web = self.job / 'hls'
         web.mkdir()
         for name in ('intro', 'main-new-codec'):
-            with (self.fixtures / f'{name}.mp4').open('rb') as source:
+            with (fixtures / f'{name}.mp4').open('rb') as source:
                 data = source.read()
                 atoms = list(media.boxes(source, 0, len(data)))
             (web / f'{name}-init.mp4').write_bytes(b''.join(data[start:end] for kind, start, _, end in atoms if kind in (b'ftyp', b'moov')))
             (web / f'{name}.m4s').write_bytes(b''.join(data[start:end] for kind, start, _, end in atoms if kind in (b'moof', b'mdat')))
-        seconds = self.intro // 10
+        seconds = hls_intro
         (web / 'test.m3u8').write_text('#EXTM3U\n#EXT-X-VERSION:7\n'
-            f'#EXT-X-TARGETDURATION:{max(seconds, self.main // 10)}\n#EXT-X-MEDIA-SEQUENCE:0\n'
+            f'#EXT-X-TARGETDURATION:{max(seconds, hls_main)}\n#EXT-X-MEDIA-SEQUENCE:0\n'
             f'#EXT-X-MAP:URI="intro-init.mp4"\n#EXTINF:{seconds},\nintro.m4s\n'
             '#EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI="main-new-codec-init.mp4"\n'
-            f'#EXTINF:{self.main // 10},\nmain-new-codec.m4s\n#EXT-X-ENDLIST\n')
+            f'#EXTINF:{hls_main},\nmain-new-codec.m4s\n#EXT-X-ENDLIST\n')
 
         class QuietHandler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *_):
@@ -472,13 +480,13 @@ done
             self.assertEqual(16, len((self.job / 'scratch/uploads').read_text().splitlines()))
             for path in outputs:
                 report = media.Tools(self.job / 'output-checks').inspect(path, self.job)
-                self.assertEqual(self.intro if 'part-0001' in path.name else self.main, report['frames'][0])
+                self.assertEqual((hls_intro if 'part-0001' in path.name else hls_main) * 10, report['frames'][0])
         finally:
             server.shutdown()
             server.server_close()
             thread.join()
         self.original = media.digest(self.job / 'capture.bin')
-        self.assertEqual([self.intro, self.main], [p['validation']['frames'][0] for p in self.normalize()['parts']])
+        self.assertEqual([hls_intro * 10, hls_main * 10], [p['validation']['frames'][0] for p in self.normalize()['parts']])
 
 
 if __name__ == '__main__':

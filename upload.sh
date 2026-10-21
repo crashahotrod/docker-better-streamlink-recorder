@@ -80,15 +80,12 @@ PY
         local raw_description final_description final_tags
         raw_description="${YOUTUBE_DESCRIPTION:-Uploaded Automatically by ${UPLOAD_BOT_NAME:?}}"
         final_description=$(format_youtube_template "$raw_description" "$part_title" "$id" "$count" "$segment") || final_description="$raw_description"
+        final_description=$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/content.py" description "$job" "$id" "$final_description") || return 1
 
         local thumbnail="$job/parts/$id.thumbnail.jpg"
         if [[ "${YOUTUBE_UPLOAD_THUMBNAIL:-true}" == true ]]; then
             if [[ ! -s "$thumbnail" ]]; then
-                local thumb_time="${YOUTUBE_THUMBNAIL_TIMESTAMP:-00:01:00}"
-                ffmpeg -nostdin -y -v error -ss "$thumb_time" -i "$input" -vframes 1 -q:v 2 "$thumbnail" 2>/dev/null || true
-                if [[ ! -s "$thumbnail" ]]; then
-                    ffmpeg -nostdin -y -v error -i "$input" -vframes 1 -q:v 2 "$thumbnail" 2>/dev/null || true
-                fi
+                python3 "$(dirname -- "${BASH_SOURCE[0]}")/content.py" thumbnail "$input" "$thumbnail" 2>/dev/null || true
                 if [[ -s "$thumbnail" ]]; then
                     local thumb_size
                     thumb_size=$(stat -c %s "$thumbnail" 2>/dev/null || stat -f %z "$thumbnail" 2>/dev/null || wc -c < "$thumbnail" 2>/dev/null || echo 0)

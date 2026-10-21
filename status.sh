@@ -146,6 +146,8 @@ build_status_json() {
     storage_kb=$(df -k --output=avail "${STORAGE_DIR:-/storage}" 2>/dev/null | tail -n 1 | tr -d ' ') || storage_kb=0
     [[ "$scratch_kb" =~ ^[0-9]+$ ]] && scratch_free_gb=$((scratch_kb / 1024 / 1024))
     [[ "$storage_kb" =~ ^[0-9]+$ ]] && storage_free_gb=$((storage_kb / 1024 / 1024))
+    [[ "$scratch_kb" =~ ^[0-9]+$ ]] || scratch_kb=0
+    [[ "$storage_kb" =~ ^[0-9]+$ ]] || storage_kb=0
     [[ "$min_free_gb" =~ ^[0-9]+$ ]] || min_free_gb=0
 
     jq -n \
@@ -162,6 +164,8 @@ build_status_json() {
         --argjson q_quarantine "$q_quarantine" \
         --argjson scratch_free_gb "$scratch_free_gb" \
         --argjson storage_free_gb "$storage_free_gb" \
+        --argjson scratch_bytes "$((scratch_kb * 1024))" \
+        --argjson storage_bytes "$((storage_kb * 1024))" \
         --argjson min_free_space_gb "$min_free_gb" \
         '{
             channel: $channel,
@@ -181,6 +185,8 @@ build_status_json() {
             disk_space: {
                 scratch_free_gb: $scratch_free_gb,
                 storage_free_gb: $storage_free_gb,
+                scratch_available_bytes: $scratch_bytes,
+                storage_available_bytes: $storage_bytes,
                 min_free_space_gb: $min_free_space_gb
             }
         }'

@@ -21,7 +21,7 @@ jobs:
       TEST_ARTIFACT_DIR: ${{ github.workspace }}/test-artifacts
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.REPO_PAT || github.token }}
           ref: ${{ github.event.repository.default_branch }}
@@ -41,35 +41,40 @@ jobs:
             echo "Stable dependency updates detected in Dockerfile."
           fi
 
-      - name: Install test dependencies
+      - name: Install ShellCheck if needed
         if: steps.check_diff.outputs.changed == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl jq shellcheck gosu supervisor
+          if ! command -v shellcheck > /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends shellcheck
+          fi
 
       - name: Validate workflows
         if: steps.check_diff.outputs.changed == 'true'
         run: |
           docker run --rm --network none -v "$PWD:/repo:ro" --workdir /repo rhysd/actionlint:1.7.11
 
-      - name: Run shell and media checks
+      - name: Lint shell scripts
         if: steps.check_diff.outputs.changed == 'true'
-        run: bash tests/run.sh
-
-      - name: Verify application user permissions
-        if: steps.check_diff.outputs.changed == 'true'
-        run: |
-          sudo useradd --create-home --user-group recorder-test
-          sudo TEST_APP_USER=recorder-test bash tests/test_permissions.sh
-          sudo TEST_APP_USER=recorder-test bash tests/test_permissions_isolation.sh
+        run: bash tests/run.sh --lint-only
 
       - name: Validate Compose sample
         if: steps.check_diff.outputs.changed == 'true'
         run: docker compose -f docker-compose.yml.sample config --quiet
 
-      - name: Build local test image
+      - name: Build cached test image
         if: steps.check_diff.outputs.changed == 'true'
-        run: docker build --pull -t streamlink-recorder:test .
+        uses: ./.github/actions/build-recorder
+        with:
+          platform: linux/amd64
+          arch: amd64
+
+      - name: Verify application user permissions
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          docker run --rm --network none --entrypoint bash -e TEST_APP_USER=apps \
+            --mount "type=bind,source=$PWD,target=/project,readonly" --workdir /project \
+            streamlink-recorder:test tests/test_permissions_isolation.sh
 
       - name: Check container startup without live services
         if: steps.check_diff.outputs.changed == 'true'

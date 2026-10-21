@@ -55,10 +55,16 @@ for variable in MODE CHANNEL CLIENT_ID CLIENT_SECRET USER_NAME; do
         echo "Missing $variable accepted" >&2; exit 1
     fi
 done
-for variable in UPLOAD ENCODE ENCODE_FALLBACK_CPU ARCHIVE_CHAT HTTP_STATUS_ENABLED NOTIFICATION_ON_ERROR REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL WINDOWS_SAFE_FILENAMES; do
+for variable in UPLOAD ENCODE ENCODE_FALLBACK_CPU ARCHIVE_CHAT STREAM_CHAPTERS HTTP_STATUS_ENABLED NOTIFICATION_ON_ERROR REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL WINDOWS_SAFE_FILENAMES; do
     if (export "$variable=invalid"; validate_environment 2>/dev/null); then
         echo "Invalid $variable accepted" >&2; exit 1
     fi
+done
+for val in 0 14 abc 1.5; do
+    if (CHAPTER_POLL_INTERVAL="$val"; validate_environment 2>/dev/null); then echo 'Invalid chapter interval accepted' >&2; exit 1; fi
+done
+for setting in YOUTUBE_THUMBNAIL_TIMESTAMP=bad DISCORD_PING_ROLE_ID=abc DISCORD_THREAD_ID=-1 RCLONE_RETRIES=0 RCLONE_BWLIMIT=fast; do
+    if (export "${setting?}"; validate_environment 2>/dev/null); then echo "Invalid $setting accepted" >&2; exit 1; fi
 done
 for val in -1 0 abc; do
     if (PUID="$val"; configure_user_ids 2>/dev/null); then echo "Invalid PUID $val accepted" >&2; exit 1; fi

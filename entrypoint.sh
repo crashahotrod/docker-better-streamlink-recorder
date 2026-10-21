@@ -19,7 +19,7 @@ validate_environment() {
     if [[ -n "${WINDOWS_SAFE_FILENAME:-}" && -z "${WINDOWS_SAFE_FILENAMES:-}" ]]; then
         export WINDOWS_SAFE_FILENAMES="$WINDOWS_SAFE_FILENAME"
     fi
-    for name in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED WINDOWS_SAFE_FILENAMES; do
+    for name in UPLOAD ENCODE ENCODE_FALLBACK_CPU REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED WINDOWS_SAFE_FILENAMES; do
         value="${!name:-false}"
         case "$value" in true|false) ;; *) printf 'ERROR: %s must be true or false.\n' "$name" >&2; errors=1 ;; esac
         export "$name=$value"
@@ -45,6 +45,12 @@ validate_environment() {
         fi
     fi
     build_encoding_args || errors=1
+    value="${CHECK_INTERVAL:-30}"
+    if [[ ! "$value" =~ ^([5-9]|[1-9][0-9]+)$ ]]; then
+        echo 'ERROR: CHECK_INTERVAL must be an integer of at least 5 seconds.' >&2
+        errors=1
+    fi
+    export CHECK_INTERVAL="$value"
     if [[ -n "${MIN_FREE_SPACE_GB:-}" ]]; then
         if [[ ! "$MIN_FREE_SPACE_GB" =~ ^[0-9]+$ ]]; then
             echo 'ERROR: MIN_FREE_SPACE_GB must be a non-negative integer.' >&2
@@ -126,6 +132,10 @@ prepare_encoding_device() {
     [[ "$ENCODER_ACCEL" == vaapi || "$ENCODER_ACCEL" == qsv ]] || return 0
     local device="${ENCODE_DEVICE:-/dev/dri/renderD128}" device_gid device_group
     if [[ ! -c "$device" ]]; then
+        if [[ "${ENCODE_FALLBACK_CPU:-false}" == true ]]; then
+            printf 'WARNING: ENCODE_DEVICE unavailable: %s; CPU fallback is enabled.\n' "$device" >&2
+            return 0
+        fi
         printf 'ERROR: ENCODE_DEVICE is not an accessible DRM device: %s. Pass the render device into Docker.\n' "$device" >&2
         return 1
     fi
@@ -139,6 +149,10 @@ prepare_encoding_device() {
     # Match the passed-through node's group without changing its host permissions.
     usermod --append --groups "$device_group" "$USER_NAME" || return 1
     if ! gosu "$USER_NAME" test -r "$device" || ! gosu "$USER_NAME" test -w "$device"; then
+        if [[ "${ENCODE_FALLBACK_CPU:-false}" == true ]]; then
+            printf 'WARNING: ENCODE_DEVICE inaccessible: %s; CPU fallback is enabled.\n' "$device" >&2
+            return 0
+        fi
         printf 'ERROR: %s cannot read/write ENCODE_DEVICE: %s. Check host device permissions.\n' "$USER_NAME" "$device" >&2
         return 1
     fi

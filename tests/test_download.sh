@@ -89,6 +89,51 @@ for MODE in twitch kick; do
 done
 [[ -z $(find "$TMPDIR" -mindepth 1 -print -quit) ]]
 
+# Resolver tests exercise real parsing and monitor fallback with deterministic output.
+# shellcheck disable=SC2317
+streamlink() {
+    printf '%s\0' "$@" > "$TEST_ROOT/resolver-args"
+    printf '%s' "$RESOLVER_RESPONSE"
+    return "${RESOLVER_STATUS:-0}"
+}
+timeout() { shift 3; "$@"; }
+MODE=kick HTTP_STATUS=403
+RESOLVER_RESPONSE='{"metadata":{"id":456,"title":"Fallback title","author":"monitor"},"streams":{"best":{"type":"hls"}}}'
+record_stream() { printf '%s\0' "$@" > "$TEST_ROOT/fallback-recording"; }
+for HTTP_STATUS in 403 429 500 401 200; do
+    API_RESPONSE='<html>challenge</html>'
+    TOKEN_RESPONSE='{"access_token":"token","expires_in":3600}'
+    TOKEN_EXPIRES_AT=0
+    monitor_once
+    mapfile -d '' -t recorded < "$TEST_ROOT/fallback-recording"
+    [[ "${recorded[*]}" == 'Fallback title monitor 456' ]]
+    mapfile -d '' -t resolver_args < "$TEST_ROOT/resolver-args"
+    [[ " ${resolver_args[*]} " == *' --retry-streams 0 --retry-max 0 --json https://kick.com/monitor '* ]]
+done
+TRANSPORT_FAILURE=true
+monitor_once
+TRANSPORT_FAILURE=false
+rm "$TEST_ROOT/fallback-recording"
+RESOLVER_STATUS=1
+RESOLVER_RESPONSE='{"error":"No playable streams found on this URL: https://kick.com/monitor"}'
+monitor_once
+[[ $(cat "$WORK_DIR/channel.status") == offline ]]
+for RESOLVER_RESPONSE in '{"error":"403 Forbidden"}' '<html>challenge</html>' '{}'; do
+    if monitor_once 2>/dev/null; then echo 'Resolver failure accepted' >&2; exit 1; fi
+    [[ $(cat "$WORK_DIR/channel.status") == error ]]
+done
+RESOLVER_STATUS=0
+for RESOLVER_RESPONSE in '{"streams":{"best":{}},"metadata":{}}' '{"error":"blocked"}' '{}'; do
+    if monitor_once 2>/dev/null; then echo 'Invalid resolver schema accepted' >&2; exit 1; fi
+done
+RESOLVER_STATUS=124
+RESOLVER_RESPONSE='{"error":"No playable streams found on this URL: https://kick.com/monitor"}'
+if monitor_once 2>/dev/null; then echo 'Timed-out resolver accepted' >&2; exit 1; fi
+[[ ! -f "$TEST_ROOT/fallback-recording" ]]
+unset -f timeout
+# Keep later negative monitor tests independent of the fallback response.
+fetch_kick_streamlink_info() { return 1; }
+
 # Monitor decisions must not create recordings for failures or offline responses.
 refresh_token() { [[ "${FAIL_TOKEN:-false}" != true ]]; }
 fetch_stream_info() { printf '%s' "$API_RESPONSE"; return "${API_EXIT:-0}"; }
@@ -192,6 +237,11 @@ streamlink() {
     esac
     return "$TEST_CAPTURE_STATUS"
 }
+mkdir -p "$TEST_ROOT/bin"
+printf '#!/bin/bash\nstreamlink "$@"\n' > "$TEST_ROOT/bin/streamlink"
+chmod +x "$TEST_ROOT/bin/streamlink"
+export -f streamlink
+export PATH="$TEST_ROOT/bin:$PATH" TEST_ROOT TEST_CAPTURE_BYTES TEST_CAPTURE_STATUS
 for TEST_CAPTURE_BYTES in missing empty; do
     for TEST_CAPTURE_STATUS in 0 1; do
         for AUTO_RECOVER_INTERRUPTED in false true; do

@@ -36,6 +36,7 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `REMUX` | `false` | After capture, stream-copy TS to MP4. MP4 input is normalized as MP4 regardless of this flag. |
 | `ENCODE` | `false` | Convert completed recordings to H.264/AAC MP4. |
 | `ENCODE_ACCEL` | `auto` | `auto`, `cpu`, `nvenc`, `vaapi`, or `qsv`. Auto infers the backend from `ENCODE_VIDEO_CODEC`, using CPU by default. |
+| `ENCODE_FALLBACK_CPU` | `false` | After a hardware transcode exits nonzero, retry that part once with CPU `libx264` before recording a stage failure. |
 | `ENCODE_CRF` | `23` | CRF for `libx264`/`libx265` CPU encoding (0–51); hardware encoders use `ENCODE_QUALITY`. |
 | `ENCODE_QUALITY` | `23` | Hardware quality: NVENC CQ / VAAPI QP (0–51), QSV ICQ (1–51). Scales differ between encoders; NVENC `0` selects automatic quality. |
 | `ENCODE_PRESET` | Backend-specific | `medium` for x264/x265/QSV, `p4` for NVENC. Leave unset for VAAPI, which has no preset option. |
@@ -54,7 +55,8 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `YOUTUBE_CATEGORY_ID` | Unset | Optional YouTube numeric category ID (e.g. `20` for Gaming). |
 | `YOUTUBE_DESCRIPTION` | Unset | Custom description template (defaults to `Uploaded Automatically by <UPLOAD_BOT_NAME>`). Supports placeholders `{channel}`, `{mode}`, `{title}`, `{date}`, `{part_title}`, `{part}`, `{count}`, `{stream_url}`, `{bot_name}`. |
 | `YOUTUBE_THUMBNAIL_TIMESTAMP` | `00:01:00` | Offset (HH:MM:SS) to extract a video frame via FFmpeg as the YouTube video thumbnail. |
-| `MIN_FREE_SPACE_GB` | `0` | Minimum free disk space in GB required on scratch/storage to start recording (`0` disables check). |
+| `CHECK_INTERVAL` | `30` | Seconds between channel checks; integer of at least `5`. |
+| `MIN_FREE_SPACE_GB` | `0` | Minimum free disk space in GiB on scratch/storage before recording. Unsplit captures check scratch every five seconds and stop with SIGINT at the threshold (`0` disables these checks). |
 | `RETENTION_DAYS` | `0` | Prune expired MP4/TS/MKV recordings and their matching sidecars from storage (`0` disables pruning). |
 | `QUARANTINE_RETENTION_DAYS` | `7` | Permanently delete whole quarantined jobs N days after entering quarantine (`0` keeps them indefinitely). Runs every 30 seconds, independently of publication. Legacy jobs use their directory modification time. |
 | `POST_PUBLISH_COMMAND` | Unset | Custom shell command evaluated when a recording part is published. |
@@ -63,7 +65,7 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `DISCORD_NOTIFY_ON_ERROR` | `true` | Queue operational alerts, including recording completion, disk warnings, quarantine, and quota errors. Does not disable a dedicated persistent status message. |
 | `DISCORD_USERNAME` | `Streamlink (<CHANNEL>)` | Optional username attribution for Discord webhook notifications. |
 | `DISCORD_AVATAR_URL` | Unset | Optional avatar image URL for Discord webhook notifications. |
-| `RECORDER_STALE_SECONDS` | `180` | Report an error after this many seconds without monitor progress or capture writes. Must be at least `150` to allow bounded API requests. |
+| `RECORDER_STALE_SECONDS` | `180` | Report an error after this many seconds without monitor progress or capture writes. Monitoring also allows `CHECK_INTERVAL` for the scheduled poll wait. Must be at least `150` to allow bounded API requests. |
 | `TWITCH_USER_TOKEN` | Unset | Optional user OAuth token for authenticated Twitch access, such as subscribed-channel ad handling. |
 
 Boolean values must be exactly `true` or `false`. Numeric values (`ENCODE_CRF`, `MIN_FREE_SPACE_GB`, `RETENTION_DAYS`, `QUARANTINE_RETENTION_DAYS`)
@@ -72,6 +74,11 @@ require `TWITCH_USER_TOKEN`; anonymous operation omits its authorization header.
 See [Streamlink's Twitch authentication instructions](https://streamlink.github.io/cli/plugins/twitch.html#authentication)
 for obtaining a user token. Application client credentials are still required
 for live-status checks.
+
+If Kick's public API fails, returns non-200, or returns invalid JSON, the monitor
+falls back to a bounded `streamlink --json` lookup using Kick's internal resolver
+and browser support. Resolver failures remain errors; an explicit no-streams
+response reports offline. Twitch continues to use its authenticated API.
 
 When `POST_PUBLISH_COMMAND` is specified, the command is executed in a subshell with
 `$PUBLISHED_FILE` (absolute path of published file), `$PUBLISHED_CHANNEL`, and `$PUBLISHED_MODE`
@@ -129,6 +136,20 @@ ad break rather than replacing it with broadcast content; see
 Set `ENCODE=true` and choose `ENCODE_ACCEL=nvenc`, `vaapi`, or `qsv`. Existing
 `ENCODE_VIDEO_CODEC=h264_nvenc`, `h264_vaapi`, or `h264_qsv` settings also work
 with the default `ENCODE_ACCEL=auto`. CPU encoding remains the default.
+
+Set `ENCODE_FALLBACK_CPU=true` to retry a failed hardware transcode once with
+`libx264`, `ENCODE_CRF` (default `23`), preset `medium`, and the configured AAC
+bitrate. This also permits startup when the selected DRM device is unavailable.
+The CPU attempt omits hardware device options and all `ENCODE_EXTRA_ARGS`, which
+may contain hardware filters or codec overrides. Hardware and CPU stderr are
+saved separately in the job's diagnostics. Both failures retain the capture and
+use the normal worker retry policy; successful fallback is verified before publication.
+
+Unsplit captures check free scratch space every five seconds when
+`MIN_FREE_SPACE_GB` is positive. Reaching the threshold sends SIGINT to Streamlink,
+retains the capture, and queues a disk warning. A stuck process receives SIGTERM
+and then SIGKILL after ten seconds per step. Partial captures follow the existing
+`AUTO_RECOVER_INTERRUPTED` policy.
 
 | Backend | Quality options generated | Default preset | Device setup |
 | --- | --- | --- | --- |
@@ -566,7 +587,7 @@ tiny-video benchmark. Tests never use live uploads or service credentials.
 ## Releases and dependency updates
 
 The image uses the maintained Python 3.12 slim Bookworm base. The uploader is
-built from its tagged upstream source using Go 1.27.2 and the security updates
+built from its tagged upstream source using Go 1.26.10 and the security updates
 pinned in `build/uploader-modules.txt`; its upstream tests run during the build.
 Build tools stay in separate build stages. Keep persistent
 scratch/storage volumes when upgrading; do not prune pending or quarantined jobs.

@@ -56,6 +56,20 @@ final=$(part_destination "$JOB" 0001 mp4)
 ENCODE_EXTRA_ARGS='-vf "scale=160:90, setsar=1" -metadata "comment=Quoted café metadata"' encode_job "$JOB"
 [[ ! -d "$JOB" ]]
 [[ $(ffprobe -v error -show_entries format_tags=comment -of default=nw=1:nk=1 "$final") == 'Quoted café metadata' ]]
+# A real CPU fallback passes normal verification even with fatal hardware stderr.
+ffmpeg() {
+    if [[ " $* " == *' -c:v h264_vaapi '* ]]; then
+        echo 'Error while opening encoder: DRM device unavailable' >&2
+        return 1
+    fi
+    command ffmpeg "$@"
+}
+new_job
+final=$(part_destination "$JOB" 0001 mp4)
+ENCODE_ACCEL=vaapi ENCODE_FALLBACK_CPU=true encode_job "$JOB"
+[[ ! -d "$JOB" && -s "$final" ]]
+[[ $(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$final") == h264 ]]
+ffmpeg() { [[ "${FAIL_STAGE:-}" != encode ]] && command ffmpeg "$@"; }
 # Existing unrelated destinations are never replaced.
 new_job
 final=$(part_destination "$JOB" 0001 mp4)
@@ -145,6 +159,11 @@ streamlink() {
     done
     return 1
 }
+mkdir -p "$TEST_ROOT/bin"
+printf '#!/bin/bash\nstreamlink "$@"\n' > "$TEST_ROOT/bin/streamlink"
+chmod +x "$TEST_ROOT/bin/streamlink"
+export -f streamlink
+export PATH="$TEST_ROOT/bin:$PATH"
 if record_stream interrupted test 4; then echo 'Interrupted capture accepted' >&2; exit 1; fi
 [[ -s "$RECORDING_JOB/capture.bin" && ! -f "$RECORDING_JOB/completed" ]]
 AUTO_RECOVER_INTERRUPTED=true recover_completed_recordings

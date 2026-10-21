@@ -7,10 +7,15 @@ TEST_ROOT=$(mktemp -d)
 trap 'find "$TEST_ROOT" -depth -delete' EXIT
 export MODE=twitch CHANNEL=test CLIENT_ID=example CLIENT_SECRET=example USER_NAME=apps
 export CONFIG_DIR="$TEST_ROOT/config"
-unset UPLOAD ENCODE REMUX YOUTUBE_SPLITTING TWITCH_USER_TOKEN WINDOWS_SAFE_FILENAMES WINDOWS_SAFE_FILENAME
+unset UPLOAD ENCODE ENCODE_FALLBACK_CPU CHECK_INTERVAL REMUX YOUTUBE_SPLITTING TWITCH_USER_TOKEN WINDOWS_SAFE_FILENAMES WINDOWS_SAFE_FILENAME
 validate_environment
 [[ "$UPLOAD" == false && "$ENCODE" == false && "$WINDOWS_SAFE_FILENAMES" == false ]]
 [[ "$QUARANTINE_RETENTION_DAYS" == 7 ]]
+[[ "$CHECK_INTERVAL" == 30 && "$ENCODE_FALLBACK_CPU" == false ]]
+for val in 5 10 30 600; do (CHECK_INTERVAL="$val"; validate_environment; [[ "$CHECK_INTERVAL" == "$val" ]]); done
+for val in 0 4 -1 abc 1.5 05; do
+    if (CHECK_INTERVAL="$val"; validate_environment 2>/dev/null); then echo "Invalid CHECK_INTERVAL $val accepted" >&2; exit 1; fi
+done
 (unset WINDOWS_SAFE_FILENAMES; WINDOWS_SAFE_FILENAME=true; validate_environment; [[ "$WINDOWS_SAFE_FILENAMES" == true ]])
 validate_upload_credentials
 for UPLOAD in false true; do
@@ -34,7 +39,7 @@ for variable in MODE CHANNEL CLIENT_ID CLIENT_SECRET USER_NAME; do
         echo "Missing $variable accepted" >&2; exit 1
     fi
 done
-for variable in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL WINDOWS_SAFE_FILENAMES; do
+for variable in UPLOAD ENCODE ENCODE_FALLBACK_CPU REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL WINDOWS_SAFE_FILENAMES; do
     if (export "$variable=invalid"; validate_environment 2>/dev/null); then
         echo "Invalid $variable accepted" >&2; exit 1
     fi
@@ -63,6 +68,7 @@ if (ENCODE=true; ENCODE_ACCEL=vaapi; ENCODE_DEVICE="$TEST_ROOT/missing-render-no
     echo 'Missing render device accepted' >&2; exit 1
 fi
 (ENCODE=true; ENCODE_ACCEL=cpu; ENCODE_DEVICE="$TEST_ROOT/missing-render-node"; prepare_encoding_device)
+(ENCODE=true; ENCODE_ACCEL=vaapi; ENCODE_FALLBACK_CPU=true; ENCODE_DEVICE="$TEST_ROOT/missing-render-node"; prepare_encoding_device)
 for val in 0 5 100; do (MIN_FREE_SPACE_GB="$val"; validate_environment); done
 for val in -1 abc; do
     if (MIN_FREE_SPACE_GB="$val"; validate_environment 2>/dev/null); then echo "Invalid MIN_FREE_SPACE_GB $val accepted" >&2; exit 1; fi

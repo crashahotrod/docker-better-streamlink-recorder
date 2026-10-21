@@ -27,6 +27,11 @@ streamlink() {
     done
     return 1
 }
+mkdir -p "$TEST_ROOT/bin"
+printf '#!/bin/bash\nstreamlink "$@"\n' > "$TEST_ROOT/bin/streamlink"
+chmod +x "$TEST_ROOT/bin/streamlink"
+export -f streamlink
+export PATH="$TEST_ROOT/bin:$PATH"
 record_stream "$message" test 123
 [[ -f "$WORK_DIR/normalize/${RECORDING_JOB##*/}/completed" ]]
 [[ $(find "$WORK_DIR/notifications" -name 'event.*.json' | wc -l) -eq 2 ]]
@@ -66,6 +71,7 @@ set_channel_status monitoring
 [[ $(get_channel_status) == monitoring ]]
 write_state "$WORK_DIR/recorder.heartbeat" "$(( $(date +%s) - 600 ))"
 [[ $(get_channel_status) == error ]]
+[[ $(CHECK_INTERVAL=900 get_channel_status) == monitoring ]]
 set_channel_status offline
 [[ $(get_channel_status) == offline ]]
 set_channel_status error

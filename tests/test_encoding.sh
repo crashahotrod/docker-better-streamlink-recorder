@@ -20,7 +20,10 @@ prune_old_recordings() { return 0; }
 ffmpeg() {
     printf '%s\0' "$@" > "$TEST_ROOT/args"
     printf 'call\n' >> "$TEST_ROOT/calls"
-    if [[ "${FAIL_ENCODER:-false}" == true ]]; then echo 'GPU unavailable' >&2; return 1; fi
+    if [[ "${FAIL_ENCODER:-false}" == true ||
+        ( "${FAIL_HARDWARE:-false}" == true && " $* " != *' -c:v libx264 '* ) ]]; then
+        echo 'GPU unavailable' >&2; return 1
+    fi
 }
 get_args() { mapfile -d '' -t args < "$TEST_ROOT/args"; }
 assert_option() {
@@ -42,7 +45,7 @@ assert_before_input() {
     done
     return 1
 }
-unset ENCODE_ACCEL ENCODE_VIDEO_CODEC ENCODE_PRESET ENCODE_CRF ENCODE_QUALITY ENCODE_DEVICE ENCODE_EXTRA_ARGS
+unset ENCODE_ACCEL ENCODE_VIDEO_CODEC ENCODE_PRESET ENCODE_CRF ENCODE_QUALITY ENCODE_DEVICE ENCODE_EXTRA_ARGS ENCODE_FALLBACK_CPU
 encode_job "$job"
 get_args
 assert_option -c:v libx264
@@ -120,11 +123,36 @@ rm "$TEST_ROOT/args"
 if ENCODE_ACCEL=vaapi ENCODE_PRESET=medium encode_job "$job"; then exit 1; fi
 if ENCODE_ACCEL=cpu ENCODE_VIDEO_CODEC=h264_nvenc encode_job "$job"; then exit 1; fi
 [[ ! -f "$TEST_ROOT/args" ]]
-# An unavailable encoder never falls back or publishes an unverified file.
+# Fallback is opt-in, and failed encodes never publish an unverified file.
 rm "$TEST_ROOT/verified" "$TEST_ROOT/published" "$TEST_ROOT/calls"
 if ENCODE_ACCEL=nvenc FAIL_ENCODER=true encode_job "$job"; then exit 1; fi
 [[ $(wc -l < "$TEST_ROOT/calls") -eq 1 ]]
 [[ $(cat "$job/capture.bin") == 'original capture' ]]
 [[ ! -f "$TEST_ROOT/verified" && ! -f "$TEST_ROOT/published" ]]
+grep -q 'GPU unavailable' "$job/diagnostics/encode-0001.stderr"
+for backend in nvenc vaapi qsv; do
+    rm -f "$TEST_ROOT/calls" "$TEST_ROOT/verified" "$TEST_ROOT/published"
+    ENCODE_ACCEL="$backend" ENCODE_FALLBACK_CPU=true FAIL_HARDWARE=true ENCODE_CRF=21 \
+        ENCODE_EXTRA_ARGS='-vf "format=nv12,hwupload" -c:v h264_vaapi' encode_job "$job"
+    [[ $(wc -l < "$TEST_ROOT/calls") -eq 2 ]]
+    [[ -f "$TEST_ROOT/verified" && -f "$TEST_ROOT/published" ]]
+    get_args
+    assert_option -c:v libx264
+    assert_option -crf 21
+    assert_option -preset medium
+    assert_no_option -vaapi_device
+    assert_no_option -init_hw_device
+    assert_no_option -vf
+    grep -q 'GPU unavailable' "$job/diagnostics/encode-0001-hardware.stderr"
+done
+for backend in nvenc cpu; do
+    rm -f "$TEST_ROOT/calls" "$TEST_ROOT/verified" "$TEST_ROOT/published"
+    if ENCODE_ACCEL="$backend" ENCODE_FALLBACK_CPU=true FAIL_ENCODER=true encode_job "$job"; then exit 1; fi
+    expected=2
+    if [[ "$backend" == cpu ]]; then expected=1; fi
+    [[ $(wc -l < "$TEST_ROOT/calls") -eq "$expected" ]]
+    [[ ! -f "$TEST_ROOT/verified" && ! -f "$TEST_ROOT/published" ]]
+    [[ $(cat "$job/capture.bin") == 'original capture' ]]
+done
 grep -q 'GPU unavailable' "$job/diagnostics/encode-0001.stderr"
 printf 'PASS: CPU/NVENC/VAAPI/QSV options, device setup, codec inference and safe hardware failure\n'

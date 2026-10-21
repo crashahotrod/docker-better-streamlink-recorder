@@ -15,6 +15,7 @@ capture_activity_time() {
 
 get_channel_status() {
     local active_job='' st='' heartbeat=0 now activity stale="${RECORDER_STALE_SECONDS:-180}"
+    local poll_interval="${CHECK_INTERVAL:-30}"
     recorder_running || { printf 'offline\n'; return 0; }
     now=$(date +%s)
     if [[ -f "$WORK_DIR/channel.status" ]]; then read -r st < "$WORK_DIR/channel.status" || st=''; fi
@@ -30,7 +31,8 @@ get_channel_status() {
     fi
     if [[ -f "$WORK_DIR/recorder.heartbeat" ]]; then read -r heartbeat < "$WORK_DIR/recorder.heartbeat" || heartbeat=0; fi
     [[ "$heartbeat" =~ ^[0-9]+$ ]] || heartbeat=0
-    if (( now - heartbeat > stale )); then
+    # A longer configured poll wait is expected inactivity, not a stuck monitor.
+    if (( now - heartbeat > stale + poll_interval )); then
         printf 'error\n'
     else
         case "$st" in offline|monitoring|error) printf '%s\n' "$st" ;; *) printf 'error\n' ;; esac

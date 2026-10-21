@@ -7,9 +7,10 @@ package. The runner checks shell syntax and ShellCheck before behavioral tests.
 
 | Behavior | Coverage |
 | --- | --- |
-| Twitch/Kick tokens, HTTP/transport failures, monitor decisions, quoted recording arguments, malformed quoting, optional authentication, empty/missing-output abort cleanup, and nonempty recovery | `test_download.sh` |
+| Twitch/Kick tokens, HTTP/transport failures, Kick resolver fallback and timeouts, monitor decisions, quoted recording arguments, malformed quoting, optional authentication, empty/missing-output abort cleanup, and nonempty recovery | `test_download.sh` |
 | POSIX argument quoting, Unicode/newlines, escaped spaces, empty/literal tokens, parser error propagation and actual encoder argument boundaries | `test_extra_args.sh` |
-| CPU/NVENC/VAAPI/QSV quality flags, presets, input-device order, codec inference, custom filters, configuration conflicts and retained jobs on hardware failure | `test_encoding.sh` |
+| CPU/NVENC/VAAPI/QSV options, codec inference, custom filters, configuration conflicts, opt-in CPU fallback and retained jobs when both attempts fail | `test_encoding.sh`, `test_pipeline.sh` |
+| Unsplit scratch guard at the threshold, SIGINT shutdown with retained bytes, disabled guard, child exit codes, stuck-process escalation and supervisor termination | `test_capture.py` |
 | Required settings, boolean flags, upload visibility, missing credentials | `test_startup.sh` |
 | Discord local outbox producers, failed enqueue isolation, live recorder locks/heartbeats, stalled captures and channel/mode status isolation on shared scratch | `test_notifications.sh` |
 | Discord payload limits/mentions, durable retries, shared rate limits, persistent-message lifecycle, webhook rotation/query parameters and worker exclusion | `test_discord.py` |

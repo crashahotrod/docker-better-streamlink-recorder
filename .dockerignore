@@ -3,6 +3,7 @@
 !Dockerfile
 !LICENSE
 !download.sh
+!capture.py
 !pipeline.sh
 !publish.sh
 !normalize.sh

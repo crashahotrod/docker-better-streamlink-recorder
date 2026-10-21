@@ -1,4 +1,5 @@
-FROM --platform=$BUILDPLATFORM golang:1.27.2-bookworm AS uploader
+FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS uploader
+ENV GOTOOLCHAIN=local
 ARG YTU_RELEASE=v1.25.5
 WORKDIR /src
 RUN git clone --depth 1 --branch "${YTU_RELEASE}" https://github.com/porjo/youtubeuploader.git .
@@ -55,7 +56,7 @@ RUN mkdir -p /var/run/dbus
 
 COPY ./download.sh /etc/streamlink/tools/
 COPY ./pipeline.sh ./publish.sh ./normalize.sh ./recover.sh ./status.sh ./audit.sh ./media.py /etc/streamlink/tools/
-COPY ./notifications.py ./operations.py ./healthcheck.py ./segment_capture.py ./session_recovery.py /etc/streamlink/tools/
+COPY ./notifications.py ./operations.py ./healthcheck.py ./segment_capture.py ./session_recovery.py ./capture.py /etc/streamlink/tools/
 COPY ./encode.sh /etc/streamlink/tools/
 COPY ./upload.sh /etc/streamlink/tools/
 COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf

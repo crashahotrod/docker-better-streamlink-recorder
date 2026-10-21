@@ -31,8 +31,21 @@ encode_job() {
         if ! ffmpeg -nostdin -y -v warning "${ENCODER_INPUT_ARGS[@]}" -i "$input" -map '0:v?' -map '0:a?' \
             -fps_mode passthrough -enc_time_base:v -1 "${ENCODER_VIDEO_ARGS[@]}" -c:a aac \
             -b:a "$abitrate" "${extra_encode_args[@]}" -f mp4 "$output" 2> "$job/diagnostics/encode-$id.stderr"; then
-            log_failure 'Encoding failed; capture retained' "$job"
-            return 1
+            if [[ "${ENCODE_FALLBACK_CPU:-false}" != true || "$ENCODER_ACCEL" == cpu ]]; then
+                log_failure 'Encoding failed; capture retained' "$job"
+                return 1
+            fi
+            log_failure 'Hardware encoding failed; retrying once with libx264 on CPU' "$job"
+            # Hardware presets, devices, filters and extra codec options are not CPU compatible.
+            # Verification reads encode-ID.stderr, so it must describe the CPU attempt.
+            mv -f -- "$job/diagnostics/encode-$id.stderr" "$job/diagnostics/encode-$id-hardware.stderr" || return 1
+            if ! ffmpeg -nostdin -y -v warning -i "$input" -map '0:v?' -map '0:a?' \
+                -fps_mode passthrough -enc_time_base:v -1 -c:v libx264 \
+                -crf "${ENCODE_CRF:-23}" -preset medium -c:a aac -b:a "$abitrate" \
+                -f mp4 "$output" 2> "$job/diagnostics/encode-$id.stderr"; then
+                log_failure 'CPU fallback failed; capture retained' "$job"
+                return 1
+            fi
         fi
         verify_part "$job" "$id" "$output" --encoded || return 1
         publish_part "$job" "$id" "$output" || return 1

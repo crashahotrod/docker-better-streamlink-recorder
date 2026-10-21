@@ -4,7 +4,7 @@ set -uo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/pipeline.sh"
 ACCESS_TOKEN=''
 TOKEN_EXPIRES_AT=0
-CHECK_INTERVAL=30
+CHECK_INTERVAL=${CHECK_INTERVAL:-30}
 
 refresh_token() {
     local endpoint response expires now
@@ -42,8 +42,44 @@ fetch_stream_info() {
         [[ "$status" != 401 ]] || return 2
         return 1
     fi
+    if ! jq -e '.data | type == "array"' "$body" > /dev/null 2>&1; then
+        rm -f -- "$body"
+        return 1
+    fi
     cat -- "$body"
     rm -f -- "$body"
+}
+
+fetch_kick_streamlink_info() {
+    local json status=0
+    local -a resolver_args=(--webbrowser true --webbrowser-headless true)
+    if [[ -n "${STREAMLINK_EXTRA_ARGS:-}" ]]; then
+        local -a extra_resolver_args=()
+        load_extra_args extra_resolver_args "$STREAMLINK_EXTRA_ARGS" || return 1
+        resolver_args+=("${extra_resolver_args[@]}")
+    fi
+    # Poll once: capture's --retry-streams would otherwise wait forever offline.
+    json=$(timeout --signal=INT --kill-after=5 90 streamlink "${resolver_args[@]}" \
+        --retry-streams 0 --retry-max 0 --json "https://kick.com/$CHANNEL") || status=$?
+    if (( status != 0 )); then
+        # Only an explicit no-streams result confirms offline, not resolver errors.
+        (( status == 1 )) || return 1
+        jq -e --arg message "No playable streams found on this URL: https://kick.com/$CHANNEL" \
+            '.error == $message' <<< "$json" > /dev/null 2>&1 || return 1
+        printf '{"data":[]}\n'
+        return 0
+    fi
+    jq -e '
+        select(.error == null and (.streams | type == "object")) |
+        if (.streams | length) == 0 then {data: []}
+        else
+            .metadata as $m |
+            select(($m.title | type == "string") and ($m.author | type == "string") and
+                   (($m.id | type) == "string" or ($m.id | type) == "number")) |
+            select(($m.id | tostring | length) > 0) |
+            {data: [{stream_title: $m.title, slug: $m.author,
+                     resolver_id: ($m.id | tostring), stream: {is_live: true}}]}
+        end' <<< "$json"
 }
 
 build_streamlink_args() {
@@ -95,7 +131,14 @@ record_stream() {
         log_failure 'Segmented capture failed' "$RECORDING_JOB"
         return 1
     fi
-    streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" "$quality" || capture_status=$?
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/capture.py" "$WORK_DIR/active" -- \
+        streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" "$quality" || capture_status=$?
+    if (( capture_status == 75 )); then
+        local available_gb
+        available_gb=$(df -k --output=avail "$WORK_DIR/active" | tail -n 1 | tr -d ' ') || available_gb=0
+        available_gb=$((available_gb / 1024 / 1024))
+        notify_low_disk_space "$WORK_DIR/active" "$available_gb" "${MIN_FREE_SPACE_GB:-0}" || true
+    fi
     if [[ ! -s "$output" ]]; then
         log_failure 'No media captured; discarding empty recording' "$RECORDING_JOB"
         discard_empty_recording "$RECORDING_JOB" || log_failure 'Empty recording cleanup pending' "$RECORDING_JOB"
@@ -120,15 +163,20 @@ record_stream() {
 }
 
 check_stream() {
-    local json live title author stream_id status started
-    refresh_token || return 1
-    if json=$(fetch_stream_info); then
-        :
+    local json='' live title author stream_id status started
+    if refresh_token; then
+        if json=$(fetch_stream_info); then
+            :
+        else
+            status=$?
+            # Invalidate in the parent shell, not fetch_stream_info's substitution.
+            [[ "$status" != 2 ]] || TOKEN_EXPIRES_AT=0
+            [[ "$MODE" == kick ]] || return 1
+            json=$(fetch_kick_streamlink_info) || return 1
+        fi
     else
-        status=$?
-        # Invalidate in the parent shell, not fetch_stream_info's substitution.
-        [[ "$status" != 2 ]] || TOKEN_EXPIRES_AT=0
-        return 1
+        [[ "$MODE" == kick ]] || return 1
+        json=$(fetch_kick_streamlink_info) || return 1
     fi
     jq -e '.data | type == "array"' <<< "$json" > /dev/null || return 1
     if [[ "$MODE" == twitch ]]; then
@@ -149,8 +197,10 @@ check_stream() {
         fi
         title=$(jq -er '.data[0].stream_title' <<< "$json") &&
             author=$(jq -er '.data[0].slug' <<< "$json") || return 1
-        started=$(jq -er '.data[0].stream.start_time' <<< "$json") &&
-            stream_id=$(date -d "$started" +%s) || return 1
+        if ! stream_id=$(jq -er '.data[0].resolver_id' <<< "$json"); then
+            started=$(jq -er '.data[0].stream.start_time' <<< "$json") &&
+                stream_id=$(date -d "$started" +%s) || return 1
+        fi
     fi
     set_channel_status "recording"
     record_stream "$title" "$author" "$stream_id" || return 1

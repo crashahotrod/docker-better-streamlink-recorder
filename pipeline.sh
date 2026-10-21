@@ -161,17 +161,24 @@ format_bytes() {
 }
 
 get_monitor_webhook() {
-    if [[ -n "${DISCORD_MONITOR_WEBHOOK_URL:-}" ]]; then
+    if [[ "${NOTIFICATION_PROVIDER:-discord}" != discord ]]; then
+        [[ "${NOTIFICATION_ON_ERROR:-${DISCORD_NOTIFY_ON_ERROR:-true}}" != false ]] || return 0
+        printf '%s\n' "${NOTIFICATION_MONITOR_URL:-${NOTIFICATION_URL:-telegram}}"
+    elif [[ -n "${DISCORD_MONITOR_WEBHOOK_URL:-}" ]]; then
         printf '%s\n' "$DISCORD_MONITOR_WEBHOOK_URL"
     elif [[ "${DISCORD_NOTIFY_ON_ERROR:-true}" == true && -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
         printf '%s\n' "$DISCORD_WEBHOOK_URL"
     fi
 }
 
+public_notifications_enabled() {
+    [[ "${NOTIFICATION_PROVIDER:-discord}" != discord || -n "${DISCORD_WEBHOOK_URL:-}" ]]
+}
+
 queue_discord() {
     # Only local, atomic outbox writes happen in recording/processing workers.
     python3 "$(dirname -- "${BASH_SOURCE[0]}")/notifications.py" enqueue "$1" <<< "$2" || {
-        echo '[Discord] Could not queue notification; application work will continue.' >&2
+        echo '[Notifications] Could not queue notification; application work will continue.' >&2
         return 1
     }
 }
@@ -325,7 +332,7 @@ notify_youtube_quota_exceeded() {
 
 notify_discord() {
     local message="$1" title="${2:-}" url="${3:-}" author="${4:-}"
-    [[ -n "${DISCORD_WEBHOOK_URL:-}" ]] || return 0
+    public_notifications_enabled || return 0
     local payload
     if [[ -n "$title" && -n "$url" ]]; then
         local color=9520895
@@ -465,7 +472,10 @@ part_committed() {
 publish_part() (
     local job="$1" id="$2" input="$3" extension="${3##*.}" final temporary='' title checksum
     final=$(part_destination "$job" "$id" "$extension") || return 1
-    if [[ -e "$final" ]]; then part_committed "$job" "$id" "$extension"; return; fi
+    if [[ -e "$final" ]]; then
+        part_committed "$job" "$id" "$extension" && publish_chat "$job" "$final"
+        return
+    fi
     read_field "$job/title" title || return 1
     mkdir -p -- "${final%/*}" || return 1
     temporary=$(mktemp -d "${final%/*}/.publish.XXXXXXXX") || return 1
@@ -479,8 +489,13 @@ publish_part() (
     write_state "$job/parts/$id.published.extension" "$extension" &&
         write_state "$job/parts/$id.published.sha256" "$checksum" || return 1
     ln -- "$temporary/media.$extension" "$final" || return 1
+    publish_chat "$job" "$final" || return 1
     run_post_publish "$final"
 )
+
+publish_chat() {
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/chat_archive.py" publish "$1" "$2"
+}
 
 job_media() {
     if [[ -f "$1/media.mp4" ]]; then
@@ -499,6 +514,7 @@ remove_completed_job() {
     while IFS= read -r id; do
         read -r extension < "$job/parts/$id.published.extension" || return 1
         part_committed "$job" "$id" "$extension" || return 1
+        publish_chat "$job" "$(part_destination "$job" "$id" "$extension")" || return 1
     done < <(part_ids "$job")
     retired="${job%/*}/.completed.${job##*/}"
     if [[ -f "$job/segment-index" ]]; then
@@ -551,6 +567,7 @@ PY
         printf '%s\n' "${REMUX:-false}" > "$RECORDING_JOB/remux-required" &&
         printf '%s\n' "${UPLOAD:-false}" > "$RECORDING_JOB/upload-required" &&
         printf '%s\n' "${ENCODE:-false}" > "$RECORDING_JOB/encode-required" &&
+        printf '%s\n' "$(if [[ "$MODE" == twitch ]]; then printf '%s' "${TWITCH_AUDIO_TRACK:-all}"; else printf all; fi)" > "$RECORDING_JOB/audio-track" &&
         write_state "$WORK_DIR/active.job" "$RECORDING_JOB"
 }
 

@@ -403,6 +403,28 @@ class MediaNormalizationTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
+            # capture.py starts Streamlink with Popen, which cannot invoke a Bash
+            # function. Intercept the executable on PATH in every child process.
+            real_streamlink = shutil.which('streamlink')
+            executables = self.job / 'bin'
+            executables.mkdir()
+            wrapper = executables / 'streamlink'
+            wrapper.write_text('''#!/usr/bin/env python3
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+if len(args) < 2 or args[-2] not in ('twitch.tv/media-test', 'kick.com/media-test'):
+    raise SystemExit('Unexpected capture URL in offline HLS test')
+local_url = 'hls://' + os.environ['LOCAL_HLS_URL']
+with open(os.environ['STREAMLINK_CALLS'], 'a') as calls:
+    calls.write(json.dumps({'requested': args[-2], 'resolved': local_url}) + '\\n')
+# A broken local fixture must fail instead of entering capture's retry loop.
+args = args[:-2] + ['--retry-streams', '0', '--retry-max', '0', '--retry-open', '1', local_url, args[-1]]
+os.execv(os.environ['REAL_STREAMLINK'], [os.environ['REAL_STREAMLINK'], *args])
+''', encoding='utf-8')
+            wrapper.chmod(0o755)
             subprocess.run(['streamlink', '--hls-playlist-reload-attempts', '1', '--output', str(self.job / 'capture.bin'),
                             f'hls://http://127.0.0.1:{server.server_port}/test.m3u8', 'best'], check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
@@ -411,11 +433,6 @@ set -euo pipefail
 source "$1/download.sh"
 source "$1/upload.sh"
 source "$1/encode.sh"
-streamlink() {
-    local args=("$@")
-    args[-2]="hls://$LOCAL_HLS_URL"
-    command streamlink "${args[@]}"
-}
 invoke_uploader() { printf 'part\n' >> "$SCRATCH_ROOT/uploads"; }
 for MODE in twitch kick; do
     pipeline_init
@@ -438,11 +455,18 @@ done
 '''
             environment = dict(os.environ, CHANNEL='media-test', SCRATCH_ROOT=str(self.job / 'scratch'),
                                STORAGE_DIR=str(self.job / 'storage'), UPLOAD_BOT_NAME='offline',
+                               PATH=str(executables) + os.pathsep + os.environ['PATH'],
+                               REAL_STREAMLINK=real_streamlink, STREAMLINK_CALLS=str(self.job / 'streamlink-calls.jsonl'),
                                LOCAL_HLS_URL=f'http://127.0.0.1:{server.server_port}/test.m3u8',
                                DISCORD_WEBHOOK_URL='', TWITCH_USER_TOKEN='')
             with (self.job / 'routes.log').open('wb') as log:
                 subprocess.run(['bash', '-c', script, 'regression', str(ROOT)], env=environment,
                                stdout=log, stderr=log, check=True, timeout=180)
+            calls = [json.loads(line) for line in (self.job / 'streamlink-calls.jsonl').read_text().splitlines()]
+            self.assertEqual(16, len(calls))
+            self.assertEqual(8, sum(call['requested'] == 'twitch.tv/media-test' for call in calls))
+            self.assertEqual(8, sum(call['requested'] == 'kick.com/media-test' for call in calls))
+            self.assertEqual({'hls://' + environment['LOCAL_HLS_URL']}, {call['resolved'] for call in calls})
             outputs = list((self.job / 'storage').rglob('*.mp4'))
             self.assertEqual(32, len(outputs))
             self.assertEqual(16, len((self.job / 'scratch/uploads').read_text().splitlines()))

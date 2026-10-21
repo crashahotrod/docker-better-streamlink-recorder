@@ -158,6 +158,23 @@ run_queue_once publish publish_recording
         segmentation.audit_sessions(self.work)
         self.assertFalse(list((self.work / 'sessions').glob('recording.*')))
 
+    def test_selected_second_audio_track_passes_segment_source_audit(self):
+        dual = self.directory / 'dual.mp4'
+        subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(self.fixtures / 'source.ts'),
+            '-f', 'lavfi', '-i', 'sine=frequency=1600:duration=12', '-map', '0:v', '-map', '0:a', '-map', '1:a',
+            '-c:v', 'copy', '-c:a', 'aac', '-movflags', 'empty_moov+frag_keyframe+default_base_moof', str(dual)],
+            check=True, capture_output=True)
+        process = self.start(FIXTURE=str(dual), TWITCH_AUDIO_TRACK='2', YOUTUBE_SEGMENT_SECONDS='4')
+        self.wait(process)
+        self.publish()
+        files = list(pathlib.Path(self.env['STORAGE_DIR']).rglob('*.mp4'))
+        self.assertTrue(files)
+        for file in files:
+            probe = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(file)]))
+            self.assertEqual(1, sum(s['codec_type'] == 'audio' for s in probe['streams']))
+        segmentation.audit_sessions(self.work)
+        self.assertFalse(list((self.work / 'sessions').glob('recording.*')))
+
     def test_all_processing_routes_preserve_frames_without_extra_remux(self):
         for container in ('ts', 'mp4'):
             for remux, upload, encode in ((r, u, e) for r in (False, True)

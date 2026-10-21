@@ -7,7 +7,7 @@ PRIVATE_CHECKOUT=$(mktemp -d)
 trap 'find "$PRIVATE_CHECKOUT" -depth -delete' EXIT
 chmod 700 -- "$PRIVATE_CHECKOUT"
 mkdir -p -- "$PRIVATE_CHECKOUT/repository/tests"
-cp -- "$ROOT/entrypoint.sh" "$ROOT/pipeline.sh" "$PRIVATE_CHECKOUT/repository/"
+cp -- "$ROOT/entrypoint.sh" "$ROOT/pipeline.sh" "$ROOT/notifications.py" "$PRIVATE_CHECKOUT/repository/"
 cp -- "$ROOT/tests/test_permissions.sh" "$PRIVATE_CHECKOUT/repository/tests/"
 if gosu "${TEST_APP_USER:?Set TEST_APP_USER to an existing non-root user}" \
     test -r "$PRIVATE_CHECKOUT/repository/pipeline.sh"; then

@@ -133,6 +133,12 @@ def prune_recordings(directory, days, now=None):
                 # The longest matching stem owns a sidecar: episode.part1.jpg belongs
                 # to episode.part1.mp4 rather than an older episode.mp4.
                 owners = [stem for stem in videos if path.name.startswith(stem + '.')]
+                if not owners and path.name.endswith('.chat.json'):
+                    # A full-broadcast chat belongs to every published segment of that broadcast.
+                    broadcast = path.name[:-len('.chat.json')]
+                    segment_owners = [stem for stem in videos if stem.startswith(broadcast + ' - part-')]
+                    if segment_owners and all(stem in expired_stems for stem in segment_owners):
+                        owners = segment_owners
                 if not owners or max(owners, key=len) not in expired_stems:
                     continue
                 try:

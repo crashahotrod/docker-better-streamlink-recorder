@@ -14,6 +14,11 @@ services:
       - ENCODE=false
       - UPLOAD=false
       # - STREAM_QUALITY=best # e.g. 1080p60,720p60,best
+      # - TWITCH_AUDIO_TRACK=all # all, 1, or 2; selects only audio streams actually delivered
+      # - ARCHIVE_CHAT=true # Twitch IRC / Kick WebSocket chat JSON sidecars
+      # - TWITCH_CHAT_USERNAME= # Optional authenticated IRC login
+      # - TWITCH_CHAT_TOKEN= # IRC token with chat:read; separate from playback token
+      # - KICK_CHATROOM_ID= # Optional override if automatic chatroom lookup is blocked
       # - STREAMLINK_EXTRA_ARGS=--twitch-low-latency --stream-segment-threads 2
       # For Kick, replace --twitch-low-latency with --kick-low-latency.
       # Quote individual values with spaces, e.g. --http-header "X-Recorder=archive worker"
@@ -42,6 +47,15 @@ services:
       # - YOUTUBE_DESCRIPTION= # Custom description template: {channel}, {mode}, {title}, {date}, {part}, {stream_url}
       # - YOUTUBE_THUMBNAIL_TIMESTAMP=00:01:00 # Frame extraction timestamp for automatic video thumbnail
       # Optional notifications & monitoring
+      # - NOTIFICATION_PROVIDER=ntfy # discord (default), webhook, ntfy, gotify, telegram
+      # - NOTIFICATION_URL=https://ntfy.example/recordings # Full topic/webhook/Gotify message endpoint
+      # - NOTIFICATION_MONITOR_URL= # Optional separate operational endpoint
+      # - NOTIFICATION_TOKEN= # Optional bearer token, required Gotify application token
+      # - TELEGRAM_BOT_TOKEN= # Required for provider=telegram
+      # - TELEGRAM_CHAT_ID= # Required for provider=telegram
+      # - NOTIFICATION_ON_ERROR=true
+      # - HTTP_STATUS_ENABLED=true # Read-only dashboard and /status.json
+      # - HTTP_STATUS_PORT=8080
       # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... # Stream go-live & upload notifications
       # - DISCORD_MONITOR_WEBHOOK_URL=https://discord.com/api/webhooks/... # Separate monitor webhook for persistent status & operational alerts
       # - DISCORD_NOTIFY_ON_ERROR=true # Broadcast operational alerts (recording complete, low disk, quarantine, quota; default true)
@@ -54,6 +68,9 @@ services:
       # - QUARANTINE_RETENTION_DAYS=7 # Delete quarantined jobs after N days (0=keep indefinitely)
       # - POST_PUBLISH_COMMAND= # Script/command to run after publication ($PUBLISHED_FILE, $PUBLISHED_CHANNEL, $PUBLISHED_MODE)
     restart: always
+    # Enable HTTP_STATUS_ENABLED above before publishing the dashboard port.
+    # ports:
+    #   - "127.0.0.1:8080:8080"
     volumes:
       - "streamlink_scratch:/etc/streamlink/scratch"
       - "streamlink_storage:/storage"

@@ -114,7 +114,7 @@ record_stream() {
     new_recording_job "$title" "$author" "$stream_id" || return 1
     if [[ "$MODE" == twitch ]]; then url="twitch.tv/$CHANNEL"; else url="kick.com/$CHANNEL"; fi
     stream_url="https://$url"
-    if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
+    if public_notifications_enabled; then
         notify_discord "**$CHANNEL is LIVE!**"$'\n'"Title: $title" "$title" "$stream_url" "$author" || true
     fi
     # Keep the original independent of normalization failures and decoder exits.
@@ -123,6 +123,9 @@ record_stream() {
     if [[ "${YOUTUBE_SPLITTING:-false}" == true ]]; then
         if python3 "$(dirname -- "${BASH_SOURCE[0]}")/segment_capture.py" capture "$RECORDING_JOB" -- \
             streamlink "${STREAMLINK_ARGS[@]}" --stdout "$url" "$quality"; then
+            python3 "$(dirname -- "${BASH_SOURCE[0]}")/chat_archive.py" session \
+                "$WORK_DIR/sessions/${RECORDING_JOB##*/}" "$STORAGE_DIR" || \
+                log_failure 'Broadcast chat publication pending; audit worker will retry' "$RECORDING_JOB"
             notify_recording_completed "$WORK_DIR/sessions/${RECORDING_JOB##*/}" || true
             write_state "$WORK_DIR/sessions/${RECORDING_JOB##*/}/broadcast-finished" true || \
                 log_failure 'Broadcast completion acknowledgment pending' "$RECORDING_JOB"
@@ -131,7 +134,7 @@ record_stream() {
         log_failure 'Segmented capture failed' "$RECORDING_JOB"
         return 1
     fi
-    python3 "$(dirname -- "${BASH_SOURCE[0]}")/capture.py" "$WORK_DIR/active" -- \
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/capture.py" "$RECORDING_JOB" -- \
         streamlink "${STREAMLINK_ARGS[@]}" --output "$output" "$url" "$quality" || capture_status=$?
     if (( capture_status == 75 )); then
         local available_gb

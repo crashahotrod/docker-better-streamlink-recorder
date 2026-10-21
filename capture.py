@@ -7,6 +7,8 @@ import signal
 import subprocess
 import sys
 
+from chat_archive import ChatArchive
+
 
 def stop(process, grace=10):
     """Allow Streamlink to flush/close files before escalating a stuck capture."""
@@ -23,7 +25,7 @@ def stop(process, grace=10):
     process.wait()
 
 
-def capture(directory, command, minimum_gb, interval=5, usage=shutil.disk_usage, pass_fds=()):
+def capture(directory, command, minimum_gb, interval=5, usage=shutil.disk_usage, pass_fds=(), chat=None):
     process = None
 
     def interrupted(signum, _frame):
@@ -31,6 +33,8 @@ def capture(directory, command, minimum_gb, interval=5, usage=shutil.disk_usage,
 
     previous = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
+        if chat:
+            chat.start()
         process = subprocess.Popen(command, start_new_session=True, pass_fds=pass_fds)
         while True:
             if minimum_gb and usage(directory).free <= minimum_gb * 1024 ** 3:
@@ -54,6 +58,8 @@ def capture(directory, command, minimum_gb, interval=5, usage=shutil.disk_usage,
         try:
             if process is not None and process.poll() is None:
                 stop(process)
+            if chat:
+                chat.stop()
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
@@ -70,4 +76,4 @@ if __name__ == '__main__':
     except OSError:
         writer_fds = ()
     raise SystemExit(capture(pathlib.Path(directory), command, int(os.environ.get('MIN_FREE_SPACE_GB') or '0'),
-                             pass_fds=writer_fds))
+                             pass_fds=writer_fds, chat=ChatArchive(directory)))

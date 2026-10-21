@@ -7,6 +7,10 @@ package. The runner checks shell syntax and ShellCheck before behavioral tests.
 
 | Behavior | Coverage |
 | --- | --- |
+| Real dual-audio preservation/selection, missing-track retention, encoded publication and chat sidecar cleanup ordering | `test_audio_tracks.py` |
+| Webhook/ntfy/Gotify/Telegram payloads, credentials, rate limits, failed delivery retention and producers without Discord | `test_notification_providers.py` |
+| IRC/Pusher parsing, ping responses, reconnect persistence, collector shutdown, sidecar collisions and segment/full-broadcast chat ranges | `test_chat_archive.py` |
+| Real loopback HTTP dashboard/JSON, atomic updates, unavailable status, HEAD, rejected writes and fixed paths | `test_status_server.py` |
 | Twitch/Kick tokens, HTTP/transport failures, Kick resolver fallback and timeouts, monitor decisions, quoted recording arguments, malformed quoting, optional authentication, empty/missing-output abort cleanup, and nonempty recovery | `test_download.sh` |
 | POSIX argument quoting, Unicode/newlines, escaped spaces, empty/literal tokens, parser error propagation and actual encoder argument boundaries | `test_extra_args.sh` |
 | CPU/NVENC/VAAPI/QSV options, codec inference, custom filters, configuration conflicts, opt-in CPU fallback and retained jobs when both attempts fail | `test_encoding.sh`, `test_pipeline.sh` |

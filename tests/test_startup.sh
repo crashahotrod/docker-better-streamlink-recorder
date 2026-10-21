@@ -8,10 +8,26 @@ trap 'find "$TEST_ROOT" -depth -delete' EXIT
 export MODE=twitch CHANNEL=test CLIENT_ID=example CLIENT_SECRET=example USER_NAME=apps
 export CONFIG_DIR="$TEST_ROOT/config"
 unset UPLOAD ENCODE ENCODE_FALLBACK_CPU CHECK_INTERVAL REMUX YOUTUBE_SPLITTING TWITCH_USER_TOKEN WINDOWS_SAFE_FILENAMES WINDOWS_SAFE_FILENAME
+unset ARCHIVE_CHAT HTTP_STATUS_ENABLED HTTP_STATUS_PORT TWITCH_AUDIO_TRACK NOTIFICATION_PROVIDER NOTIFICATION_ON_ERROR
 validate_environment
 [[ "$UPLOAD" == false && "$ENCODE" == false && "$WINDOWS_SAFE_FILENAMES" == false ]]
 [[ "$QUARANTINE_RETENTION_DAYS" == 7 ]]
 [[ "$CHECK_INTERVAL" == 30 && "$ENCODE_FALLBACK_CPU" == false ]]
+[[ "$ARCHIVE_CHAT" == false && "$HTTP_STATUS_ENABLED" == false && "$HTTP_STATUS_PORT" == 8080 && "$TWITCH_AUDIO_TRACK" == all ]]
+for val in all 1 2; do (TWITCH_AUDIO_TRACK="$val"; validate_environment); done
+for val in 0 3 invalid; do
+    if (TWITCH_AUDIO_TRACK="$val"; validate_environment 2>/dev/null); then echo 'Invalid audio track accepted' >&2; exit 1; fi
+done
+for val in 1024 8080 65535; do (HTTP_STATUS_PORT="$val"; validate_environment); done
+for val in 80 0 65536 abc; do
+    if (HTTP_STATUS_PORT="$val"; validate_environment 2>/dev/null); then echo 'Invalid status port accepted' >&2; exit 1; fi
+done
+if (NOTIFICATION_PROVIDER=unknown; validate_environment 2>/dev/null); then echo 'Unknown notification provider accepted' >&2; exit 1; fi
+# Invalid configuration stays local to each validation attempt.
+# shellcheck disable=SC2030
+if (NOTIFICATION_PROVIDER=gotify; unset NOTIFICATION_URL NOTIFICATION_TOKEN; validate_environment 2>/dev/null); then exit 1; fi
+# shellcheck disable=SC2031
+(export NOTIFICATION_PROVIDER=ntfy NOTIFICATION_URL=https://example.invalid/topic; validate_environment)
 for val in 5 10 30 600; do (CHECK_INTERVAL="$val"; validate_environment; [[ "$CHECK_INTERVAL" == "$val" ]]); done
 for val in 0 4 -1 abc 1.5 05; do
     if (CHECK_INTERVAL="$val"; validate_environment 2>/dev/null); then echo "Invalid CHECK_INTERVAL $val accepted" >&2; exit 1; fi
@@ -39,7 +55,7 @@ for variable in MODE CHANNEL CLIENT_ID CLIENT_SECRET USER_NAME; do
         echo "Missing $variable accepted" >&2; exit 1
     fi
 done
-for variable in UPLOAD ENCODE ENCODE_FALLBACK_CPU REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL WINDOWS_SAFE_FILENAMES; do
+for variable in UPLOAD ENCODE ENCODE_FALLBACK_CPU ARCHIVE_CHAT HTTP_STATUS_ENABLED NOTIFICATION_ON_ERROR REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL WINDOWS_SAFE_FILENAMES; do
     if (export "$variable=invalid"; validate_environment 2>/dev/null); then
         echo "Invalid $variable accepted" >&2; exit 1
     fi

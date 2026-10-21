@@ -8,6 +8,8 @@ import sys
 def check(environ=os.environ, run=subprocess.run):
     names = ['download', 'normalize', 'publish', 'status', 'notify', 'audit']
     names += [name for name in ('upload', 'encode') if environ.get(name.upper(), 'false') == 'true']
+    if environ.get('HTTP_STATUS_ENABLED', 'false') == 'true':
+        names.append('http')
     expected = {'streamlink_' + name for name in names}
     try:
         result = run(['supervisorctl', 'status', *sorted(expected)],

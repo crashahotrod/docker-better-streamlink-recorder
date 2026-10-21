@@ -36,11 +36,12 @@ class HealthTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertNotIn('streamlink_upload', args)
         self.assertNotIn('streamlink_encode', args)
+        self.assertNotIn('streamlink_http', args)
         self.assertIn('streamlink_notify', args)
 
     def test_every_enabled_worker_must_be_running(self):
-        env = {'UPLOAD': 'true', 'ENCODE': 'true'}
-        for worker in ('download', 'normalize', 'publish', 'status', 'notify', 'audit', 'upload', 'encode'):
+        env = {'UPLOAD': 'true', 'ENCODE': 'true', 'HTTP_STATUS_ENABLED': 'true'}
+        for worker in ('download', 'normalize', 'publish', 'status', 'notify', 'audit', 'upload', 'encode', 'http'):
             for state in ('FATAL', 'STOPPED', 'EXITED', 'STARTING', 'BACKOFF'):
                 with self.subTest(worker=worker, state=state):
                     self.assertFalse(health.check(env, self.runner(**{'streamlink_' + worker: state})))
@@ -235,6 +236,19 @@ class StorageRetentionTests(unittest.TestCase):
             operations.prune_recordings(self.channel, 7, self.now)
         self.assertTrue(media.exists())
         self.assertTrue(companion.exists())
+
+    def test_full_broadcast_chat_waits_for_all_segments_to_expire(self):
+        self.file('Season/broadcast - part-0001.mp4', 10)
+        newer = self.file('Season/broadcast - part-0002.mp4', 1)
+        chat = self.file('Season/broadcast.chat.json', 10)
+        unrelated = self.file('Season/other.chat.json', 10)
+        operations.prune_recordings(self.channel, 7, self.now)
+        self.assertTrue(chat.exists())
+        old = self.now - 10 * 86400
+        os.utime(newer, (old, old))
+        operations.prune_recordings(self.channel, 7, self.now)
+        self.assertFalse(chat.exists())
+        self.assertTrue(unrelated.exists())
 
     def test_shell_pruner_uses_the_current_channel_storage(self):
         media = self.file('Season/published.mp4')

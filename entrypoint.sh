@@ -19,7 +19,7 @@ validate_environment() {
     if [[ -n "${WINDOWS_SAFE_FILENAME:-}" && -z "${WINDOWS_SAFE_FILENAMES:-}" ]]; then
         export WINDOWS_SAFE_FILENAMES="$WINDOWS_SAFE_FILENAME"
     fi
-    for name in UPLOAD ENCODE ENCODE_FALLBACK_CPU REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED WINDOWS_SAFE_FILENAMES; do
+    for name in UPLOAD ENCODE ENCODE_FALLBACK_CPU ARCHIVE_CHAT HTTP_STATUS_ENABLED REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED WINDOWS_SAFE_FILENAMES; do
         value="${!name:-false}"
         case "$value" in true|false) ;; *) printf 'ERROR: %s must be true or false.\n' "$name" >&2; errors=1 ;; esac
         export "$name=$value"
@@ -30,6 +30,31 @@ validate_environment() {
     value="${DISCORD_NOTIFY_ON_ERROR:-true}"
     case "$value" in true|false) ;; *) printf 'ERROR: DISCORD_NOTIFY_ON_ERROR must be true or false.\n' >&2; errors=1 ;; esac
     export DISCORD_NOTIFY_ON_ERROR="$value"
+    value="${NOTIFICATION_ON_ERROR:-$DISCORD_NOTIFY_ON_ERROR}"
+    case "$value" in true|false) ;; *) echo 'ERROR: NOTIFICATION_ON_ERROR must be true or false.' >&2; errors=1 ;; esac
+    export NOTIFICATION_ON_ERROR="$value" DISCORD_NOTIFY_ON_ERROR="$value"
+    export NOTIFICATION_PROVIDER="${NOTIFICATION_PROVIDER:-discord}"
+    python3 "$(dirname -- "${BASH_SOURCE[0]}")/notifications.py" validate || errors=1
+    value="${TWITCH_AUDIO_TRACK:-all}"
+    case "$value" in all|1|2) ;; *) echo 'ERROR: TWITCH_AUDIO_TRACK must be all, 1, or 2.' >&2; errors=1 ;; esac
+    export TWITCH_AUDIO_TRACK="$value"
+    value="${HTTP_STATUS_PORT:-8080}"
+    if [[ ! "$value" =~ ^[1-9][0-9]{0,4}$ ]] || (( value > 65535 || value < 1024 )); then
+        echo 'ERROR: HTTP_STATUS_PORT must be between 1024 and 65535.' >&2; errors=1
+    fi
+    export HTTP_STATUS_PORT="$value" HTTP_STATUS_HOST="${HTTP_STATUS_HOST:-0.0.0.0}"
+    if [[ -n "${KICK_CHATROOM_ID:-}" && ! "$KICK_CHATROOM_ID" =~ ^[1-9][0-9]*$ ]]; then
+        echo 'ERROR: KICK_CHATROOM_ID must be a positive integer.' >&2; errors=1
+    fi
+    if [[ -n "${TWITCH_CHAT_TOKEN:-}" && -z "${TWITCH_CHAT_USERNAME:-}" ]]; then
+        echo 'ERROR: TWITCH_CHAT_USERNAME is required with TWITCH_CHAT_TOKEN.' >&2; errors=1
+    fi
+    for name in TWITCH_CHAT_USERNAME TWITCH_CHAT_TOKEN; do
+        value="${!name:-}"
+        if [[ "$value" == *$'\r'* || "$value" == *$'\n'* ]]; then
+            printf 'ERROR: %s cannot contain line breaks.\n' "$name" >&2; errors=1
+        fi
+    done
     if [[ "$UPLOAD" == true && -z "${UPLOAD_BOT_NAME:-}" ]]; then
         echo 'ERROR: UPLOAD_BOT_NAME is required when uploading.' >&2
         errors=1

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent Discord outbox and status-message worker; never run HTTP in producers."""
+"""Durable notification outbox with provider adapters and Discord status updates."""
 import contextlib
 import email.utils
 import hashlib
@@ -14,6 +14,71 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+
+PROVIDERS = ('discord', 'webhook', 'ntfy', 'gotify', 'telegram')
+
+
+def validate_config(environ=os.environ):
+    provider = environ.get('NOTIFICATION_PROVIDER', 'discord')
+    if provider not in PROVIDERS:
+        raise ValueError('NOTIFICATION_PROVIDER must be discord, webhook, ntfy, gotify, or telegram')
+    if provider == 'telegram':
+        for name in ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'):
+            if not environ.get(name):
+                raise ValueError(f'{name} is required for Telegram notifications')
+        if not all(c.isalnum() or c in ':_-' for c in environ['TELEGRAM_BOT_TOKEN']):
+            raise ValueError('Invalid TELEGRAM_BOT_TOKEN format')
+    elif provider != 'discord':
+        for name in ('NOTIFICATION_URL', 'NOTIFICATION_MONITOR_URL'):
+            value = environ.get(name, '')
+            if not value and name == 'NOTIFICATION_MONITOR_URL':
+                continue
+            parts = urllib.parse.urlsplit(value)
+            if parts.scheme not in ('http', 'https') or not parts.hostname or parts.username or parts.password:
+                raise ValueError(f'{name} must be an HTTP(S) URL without embedded credentials')
+        if provider == 'gotify' and not environ.get('NOTIFICATION_TOKEN'):
+            raise ValueError('NOTIFICATION_TOKEN is required for Gotify')
+
+
+def notification_text(payload, environ):
+    embeds = payload.get('embeds', [])
+    title = next((embed['title'] for embed in embeds if embed.get('title')), 'Streamlink Recorder')
+    lines = [payload['content']] if payload.get('content') else []
+    url = ''
+    for embed in embeds:
+        if embed.get('description'):
+            lines.append(embed['description'])
+        lines.extend(f"{field['name']}: {field['value']}" for field in embed.get('fields', []))
+        if embed.get('url'):
+            url = embed['url']
+            lines.append(url)
+    return {'title': title, 'message': '\n'.join(lines) or title, 'url': url,
+            'channel': environ.get('CHANNEL', ''), 'platform': environ.get('MODE', '')}
+
+
+def provider_request(provider, url, payload, environ):
+    event = notification_text(payload, environ)
+    headers = {'Content-Type': 'application/json', 'User-Agent': 'StreamlinkRecorder/1.0'}
+    token = environ.get('NOTIFICATION_TOKEN', '')
+    if token:
+        headers['X-Gotify-Key' if provider == 'gotify' else 'Authorization'] = (
+            token if provider == 'gotify' else 'Bearer ' + token)
+    if provider == 'ntfy':
+        headers['Content-Type'] = 'text/plain; charset=utf-8'
+        # RFC 2047 avoids invalid non-ASCII and newline characters in HTTP headers.
+        from email.header import Header
+        headers['Title'] = Header(event['title'].replace('\r', ' ').replace('\n', ' '), 'utf-8', maxlinelen=1000000).encode()
+        data = event['message'].encode('utf-8')
+    else:
+        if provider == 'gotify':
+            event = {'title': event['title'], 'message': event['message'], 'priority': 5}
+        elif provider == 'telegram':
+            event = {'chat_id': environ['TELEGRAM_CHAT_ID'],
+                     'text': clip(event['title'] + '\n' + event['message'], 4096),
+                     'link_preview_options': {'is_disabled': True}}
+        data = json.dumps(event).encode('utf-8')
+    return urllib.request.Request(url, data=data, headers=headers, method='POST')
 
 
 def atomic_json(path, value):
@@ -195,6 +260,14 @@ class Worker:
         self.rate_dir = pathlib.Path(environ.get('SCRATCH_ROOT', '/etc/streamlink/scratch')) / 'discord-state'
 
     def target(self, name):
+        provider = self.environ.get('NOTIFICATION_PROVIDER', 'discord')
+        if provider != 'discord':
+            if name == 'monitor' and self.environ.get('NOTIFICATION_ON_ERROR',
+                    self.environ.get('DISCORD_NOTIFY_ON_ERROR', 'true')) == 'false':
+                return ''
+            if provider == 'telegram':
+                return 'https://api.telegram.org/bot' + self.environ['TELEGRAM_BOT_TOKEN'] + '/sendMessage'
+            return (self.environ.get('NOTIFICATION_MONITOR_URL') if name == 'monitor' else None) or self.environ.get('NOTIFICATION_URL', '')
         primary = self.environ.get('DISCORD_WEBHOOK_URL', '')
         if name == 'public':
             return primary
@@ -225,6 +298,9 @@ class Worker:
                 data=json.dumps(sanitize(out_payload)).encode(),
                 headers={'Content-Type': 'application/json', 'User-Agent': 'StreamlinkRecorder/1.0'},
                 method='PATCH' if message_id else 'POST')
+            provider = self.environ.get('NOTIFICATION_PROVIDER', 'discord')
+            if provider != 'discord':
+                request = provider_request(provider, webhook, payload, self.environ)
             try:
                 with self.opener(request, timeout=30) as response:
                     code, headers, raw = response.status, response.headers, response.read(65536)
@@ -236,10 +312,14 @@ class Worker:
                 body = json.loads(raw)
             except (ValueError, UnicodeDecodeError):
                 body = {}
+            if not isinstance(body, dict):
+                body = {}
+            if provider == 'telegram' and 200 <= code < 300 and body.get('ok') is not True:
+                code = body.get('error_code', 502)
             retry_at = 0
             if code == 429:
                 delays = [60.0]
-                for value in (body.get('retry_after'), headers.get('Retry-After')):
+                for value in (body.get('retry_after'), body.get('parameters', {}).get('retry_after'), headers.get('Retry-After')):
                     try:
                         delay = float(value)
                     except (TypeError, ValueError):
@@ -272,7 +352,7 @@ class Worker:
                     or type(event.get('retry_at', 0)) not in (int, float)
                     or not math.isfinite(event.get('retry_at', 0)) or event.get('retry_at', 0) < 0):
                 path.rename(path.with_suffix('.invalid'))
-                print('[Discord] Invalid queued event retained for inspection.', file=sys.stderr)
+                print('[Notifications] Invalid queued event retained for inspection.', file=sys.stderr)
                 continue
             if event.get('retry_at', 0) > self.now():
                 continue
@@ -288,14 +368,16 @@ class Worker:
                 path.unlink()
             elif code in (400, 401, 404):
                 path.rename(path.with_suffix('.invalid'))
-                print(f'[Discord] Event delivery failed with permanent HTTP {code}; event moved to .invalid.', file=sys.stderr)
+                print(f'[Notifications] Event delivery failed with permanent HTTP {code}; event moved to .invalid.', file=sys.stderr)
             else:
                 attempts = min(event.get('attempts', 0) + 1, 6)
                 event.update(attempts=attempts, retry_at=max(retry_at, self.now() + min(30 * 2 ** (attempts - 1), 900)))
                 atomic_json(path, event)
-                print(f'[Discord] Event delivery failed (HTTP {code}); queued for retry.', file=sys.stderr)
+                print(f'[Notifications] Event delivery failed (HTTP {code}); queued for retry.', file=sys.stderr)
 
     def persistent_status(self):
+        if self.environ.get('NOTIFICATION_PROVIDER', 'discord') != 'discord':
+            return
         # A public webhook is deliberately never used for the dashboard.
         webhook = self.environ.get('DISCORD_MONITOR_WEBHOOK_URL', '')
         if not webhook:
@@ -348,6 +430,12 @@ class Worker:
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'validate':
+        try:
+            validate_config()
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
+        return
     work = pathlib.Path(os.environ.get('SCRATCH_ROOT', '/etc/streamlink/scratch')) / os.environ['MODE'] / os.environ['CHANNEL'] / 'queue-v2'
     if len(sys.argv) > 1 and sys.argv[1] == 'enqueue':
         enqueue(work, sys.argv[2], json.load(sys.stdin))
@@ -357,7 +445,7 @@ def main():
         try:
             worker.cycle()
         except (OSError, ValueError, KeyError, TypeError):
-            print('[Discord] Worker cycle failed; pending events retained.', file=sys.stderr)
+            print('[Notifications] Worker cycle failed; pending events retained.', file=sys.stderr)
         if os.environ.get('NOTIFY_ONCE') == 'true':
             return
         time.sleep(1)

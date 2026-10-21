@@ -158,7 +158,7 @@ PY
                 printf '[Upload] Video published: %s\n' "$video_url"
             fi
         fi
-        if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
+        if public_notifications_enabled; then
             notify_msg="**Upload Complete**: $part_title"
             if [[ -n "$video_url" ]]; then
                 notify_msg="$notify_msg"$'\n'"$video_url"

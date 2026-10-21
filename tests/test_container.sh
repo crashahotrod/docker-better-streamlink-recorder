@@ -61,6 +61,7 @@ assert programs['streamlink_upload'] == (os.environ['UPLOAD'] == 'true')
 assert programs['streamlink_encode'] == (os.environ['ENCODE'] == 'true')
 assert programs['streamlink_download'] and programs['streamlink_publish'] and programs['streamlink_normalize']
 assert programs['streamlink_status'] and programs['streamlink_notify'] and programs['streamlink_audit']
+assert not programs['streamlink_http']
 PY
 SH
     done
@@ -92,6 +93,7 @@ for mode in twitch kick; do
             container_id=$(docker run --network none -d --rm -e "MODE=$mode" -e CHANNEL=test \
                 -e CLIENT_ID=example -e CLIENT_SECRET=example -e "UPLOAD=$upload" -e "ENCODE=$encode" \
                 -e UPLOAD_BOT_NAME=smoke-test -e YOUTUBE_PRIVACY=private \
+                -e HTTP_STATUS_ENABLED=true \
                 -e 'PATH=/mockbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
                 --mount "type=bind,source=$TEST_MOUNT_ROOT/mocks,target=/mockbin,readonly" \
                 --mount "type=bind,source=$TEST_MOUNT_ROOT/scratch,target=/etc/streamlink/scratch" \
@@ -101,7 +103,8 @@ for mode in twitch kick; do
             ready=false
             for ((i=0; i<20; i++)); do
                 if docker exec "$container_id" /usr/bin/python3 /project/tests/check_processes.py 2>/dev/null &&
-                    docker exec "$container_id" python3 /etc/streamlink/tools/healthcheck.py; then
+                    docker exec "$container_id" python3 /etc/streamlink/tools/healthcheck.py &&
+                    docker exec "$container_id" python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/status.json", timeout=3).close()' 2>/dev/null; then
                     ready=true
                     break
                 fi
@@ -112,6 +115,7 @@ for mode in twitch kick; do
                 docker exec "$container_id" supervisorctl status || true
                 exit 1
             fi
+            docker exec "$container_id" python3 -c 'import urllib.request; assert b"Active capture" in urllib.request.urlopen("http://127.0.0.1:8080/", timeout=3).read()'
             # Required worker failures must fail health even while other workers run.
             docker exec "$container_id" supervisorctl stop streamlink_download > /dev/null
             if docker exec "$container_id" python3 /etc/streamlink/tools/healthcheck.py; then

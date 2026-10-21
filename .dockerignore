@@ -4,6 +4,9 @@
 !LICENSE
 !download.sh
 !capture.py
+!chat_archive.py
+!status_server.py
+!dashboard.html
 !pipeline.sh
 !publish.sh
 !normalize.sh

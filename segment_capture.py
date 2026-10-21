@@ -22,6 +22,7 @@ import time
 
 import media
 from notifications import atomic_json, enqueue, lock
+from chat_archive import ChatArchive, publish_session
 
 GIB = 1024 ** 3
 MAX_DURATION = 43170  # 11h59m30s; leave headroom below YouTube's 12-hour limit.
@@ -144,6 +145,7 @@ class Capture:
         self.sealed = set()
         self.current_size = 0
         self.current = 1
+        self.chat_offset = 0.0
         self.ending = False
         self.success = False
         self.source_periods = []
@@ -163,6 +165,8 @@ class Capture:
             job.mkdir()
             for name in FIELDS:
                 shutil.copyfile(self.session / name, job / name)
+            if (self.session / 'audio-track').exists():
+                shutil.copyfile(self.session / 'audio-track', job / 'audio-track')
             state(job / 'started-at', int(time.time()))
             state(job / 'segment-index', index)
             state(job / 'segment-parent', self.parent)
@@ -326,6 +330,9 @@ class Capture:
                 raise CaptureError('Segment size is outside the upload ceiling')
             require_space(self.work, max(self.current_size, file.stat().st_size))
             state(job / 'segment-duration', duration)
+            state(job / 'chat-start', self.chat_offset)
+            self.chat_offset += duration
+            state(job / 'chat-end', self.chat_offset)
             state(job / 'segment-epoch', epoch['number'])
             (job / 'segment-incomplete').unlink()
             state(job / 'completed', 'true')
@@ -346,6 +353,7 @@ class Capture:
 
     def run(self, source=None):
         consumer = None
+        chat = ChatArchive(self.session)
         original_handlers = {}
 
         def interrupted(_signum, _frame):
@@ -356,6 +364,8 @@ class Capture:
             for sig in (signal.SIGTERM, signal.SIGINT):
                 original_handlers[sig] = signal.signal(sig, interrupted)
             self.guard()
+            if source is None:
+                chat.start()
             self.source = source or Source(self.session / 'capture.bin', self.command, self.guard,
                                            pass_fds=(self.writer_lock.fileno(),))
             consumer = threading.Thread(target=self.feed, daemon=True)
@@ -396,6 +406,7 @@ class Capture:
                 stop_process(epoch['process'])
             if consumer:
                 consumer.join(timeout=6)
+            chat.stop()
             if not self.success:
                 self.save('interrupted')
             (self.work / 'active.job').unlink(missing_ok=True)
@@ -432,7 +443,8 @@ class Capture:
     def low_disk_alert(self):
         if os.environ.get('DISCORD_NOTIFY_ON_ERROR', 'true') == 'false':
             return
-        if not (os.environ.get('DISCORD_MONITOR_WEBHOOK_URL') or os.environ.get('DISCORD_WEBHOOK_URL')):
+        if not (os.environ.get('DISCORD_MONITOR_WEBHOOK_URL') or os.environ.get('DISCORD_WEBHOOK_URL') or
+                os.environ.get('NOTIFICATION_PROVIDER', 'discord') != 'discord'):
             return
         try:
             enqueue(self.work, 'monitor', {'embeds': [{'title': 'Low Disk Space: capture stopped safely',
@@ -559,7 +571,7 @@ def verify_session_source(work, session, periods, receipts):
         if not whole:
             media.copy_range(source, candidate, period['start'], period['end'])
         tools = media.Tools(session / 'audit' / str(number))
-        report = tools.inspect(candidate, session)
+        report = media.select_audio_report(tools.inspect(candidate, session), media.audio_track(session))
         verify_source_frames(report, [receipt for receipt in receipts if receipt['epoch'] == number])
         for kind, count in zip(report['stream_types'], report['packets']):
             original[kind] += count
@@ -587,6 +599,7 @@ def audit_session(work, session):
             receipt = json.loads(receipt.read_text())
             receipts.append(receipt)
         else:
+            publish_session(session, os.environ.get('STORAGE_DIR', '/storage'), os.environ.get('CHANNEL', work.parent.name))
             verify_session_source(work, session, manifest['source_periods'], receipts)
             # Raw input is retained through the broadcast and until all child publications are verified.
             retired = session.with_name('.completed.' + session.name)
@@ -600,7 +613,8 @@ def audit_session(work, session):
         atomic_json(manifest_file, manifest)
         print(f'[Capture] Source audit failed; original retained: {session}: {error}', file=sys.stderr)
         if os.environ.get('DISCORD_NOTIFY_ON_ERROR', 'true') != 'false' and (
-                os.environ.get('DISCORD_MONITOR_WEBHOOK_URL') or os.environ.get('DISCORD_WEBHOOK_URL')):
+                os.environ.get('DISCORD_MONITOR_WEBHOOK_URL') or os.environ.get('DISCORD_WEBHOOK_URL') or
+                os.environ.get('NOTIFICATION_PROVIDER', 'discord') != 'discord'):
             enqueue(work, 'monitor', {'embeds': [{'title': 'Recording source audit failed',
                 'description': 'Original capture retained for inspection: ' + session.name,
                 'color': 15158332}]})

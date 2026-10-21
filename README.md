@@ -31,6 +31,11 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `CLIENT_SECRET` | Required | Corresponding application client secret. |
 | `STREAM_QUALITY` | `best` | Stream quality string passed to Streamlink (e.g. `1080p60,720p60,best`). |
 | `STREAMLINK_EXTRA_ARGS` | Unset | Extra arguments passed to Streamlink, with shell-style quoting (e.g. `--twitch-low-latency`). See recipes below. |
+| `TWITCH_AUDIO_TRACK` | `all` | Preserve all delivered audio streams, or select the first (`1`) or second (`2`) audio stream with FFmpeg. Twitch jobs only; selection is saved with each recording. |
+| `ARCHIVE_CHAT` | `false` | Archive Twitch IRC / Kick WebSocket chat while recording, and publish `.chat.json` sidecars. |
+| `TWITCH_CHAT_USERNAME` | Unset | Optional Twitch chat account login; required with `TWITCH_CHAT_TOKEN`. |
+| `TWITCH_CHAT_TOKEN` | Unset | Optional IRC user token with `chat:read`; anonymous read-only chat is attempted when unset. Separate from the Streamlink playback token. |
+| `KICK_CHATROOM_ID` | Auto-detected | Optional positive chatroom ID; avoids Kick's channel lookup when it is blocked by bot protection. |
 | `AUTO_RECOVER_INTERRUPTED` | `false` | Automatically recover orphaned unsplit captures and validate/recover stopped segmented sessions before the next live-status check. |
 | `WINDOWS_SAFE_FILENAMES` | `false` | Restrict stored recording filenames to Windows OS safe characters (`<>:"/\|?*` and control characters replaced with `-`). |
 | `REMUX` | `false` | After capture, stream-copy TS to MP4. MP4 input is normalized as MP4 regardless of this flag. |
@@ -61,6 +66,16 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `QUARANTINE_RETENTION_DAYS` | `7` | Permanently delete whole quarantined jobs N days after entering quarantine (`0` keeps them indefinitely). Runs every 30 seconds, independently of publication. Legacy jobs use their directory modification time. |
 | `POST_PUBLISH_COMMAND` | Unset | Custom shell command evaluated when a recording part is published. |
 | `DISCORD_WEBHOOK_URL` | Unset | Optional Discord webhook for rich embed go-live and upload-complete alerts. Notification failures do not stop recording. |
+| `NOTIFICATION_PROVIDER` | `discord` | `discord`, `webhook`, `ntfy`, `gotify`, or `telegram`. Selects the outbox delivery adapter. |
+| `NOTIFICATION_URL` | Required for webhook/ntfy/gotify | Full HTTP(S) delivery endpoint; ntfy topic URL or Gotify `/message` URL. |
+| `NOTIFICATION_MONITOR_URL` | `NOTIFICATION_URL` | Optional separate endpoint for operational alerts with webhook/ntfy/gotify. |
+| `NOTIFICATION_TOKEN` | Unset | Bearer token for webhook/ntfy, or Gotify application token sent as `X-Gotify-Key` (required for Gotify). |
+| `TELEGRAM_BOT_TOKEN` | Required for Telegram | Telegram bot token. |
+| `TELEGRAM_CHAT_ID` | Required for Telegram | Telegram destination chat ID, including the minus sign for groups. |
+| `NOTIFICATION_ON_ERROR` | `DISCORD_NOTIFY_ON_ERROR` | Provider-independent switch for operational alerts; public live/upload events remain enabled. |
+| `HTTP_STATUS_ENABLED` | `false` | Start the read-only JSON endpoint and dashboard HTTP worker. |
+| `HTTP_STATUS_HOST` | `0.0.0.0` | HTTP bind address inside the container. |
+| `HTTP_STATUS_PORT` | `8080` | HTTP listening port, integer from `1024` to `65535`. |
 | `DISCORD_MONITOR_WEBHOOK_URL` | Unset | Dedicated webhook for the persistent status message and operational alerts. Only operational alerts fall back to `DISCORD_WEBHOOK_URL`. |
 | `DISCORD_NOTIFY_ON_ERROR` | `true` | Queue operational alerts, including recording completion, disk warnings, quarantine, and quota errors. Does not disable a dedicated persistent status message. |
 | `DISCORD_USERNAME` | `Streamlink (<CHANNEL>)` | Optional username attribution for Discord webhook notifications. |
@@ -466,7 +481,90 @@ already normalized job, inspect its manifest, receipts, and diagnostics rather
 than removing them to force a retry. An interrupted normalization can leave
 `.normalizing.*` directories; inspect these only with the container stopped.
 
-## Status monitoring and Discord alerts
+## Audio track selection and chat archives
+
+`TWITCH_AUDIO_TRACK=all` preserves every delivered audio stream through
+normalization, publication, and optional encoding. Set `1` or `2` to select one
+audio stream during a verified stream-copy pass. Selected output is MP4, including
+when `REMUX=false`. The original capture retains every delivered stream until
+publication succeeds. A missing requested track retains the original for review
+instead of silently substituting a different mix. Kick recordings preserve all
+audio streams.
+
+The pinned Streamlink Twitch plugin has no `--twitch-audio-track` flag. This
+setting selects streams present in the captured media; it cannot retrieve a
+VOD-only mix Twitch does not expose in its live playlist. A broadcaster's OBS
+track 2 is not necessarily delivered as a second live audio stream, and selecting
+the second stream does not certify that its contents are copyright-safe.
+
+With `ARCHIVE_CHAT=true`, a read-only collector connects alongside the video
+capture. Twitch uses TLS IRC with metadata tags and keepalives. Anonymous reading
+is attempted by default; provide `TWITCH_CHAT_USERNAME` and `TWITCH_CHAT_TOKEN`
+with `chat:read` when authentication is needed. Kick uses its chatroom WebSocket;
+set `KICK_CHATROOM_ID` if automatic chatroom lookup encounters bot protection.
+Kick's WebSocket interface is unofficial and may change.
+
+Each message is flushed to `chat.jsonl` in the active job or segmented session,
+with author, content, platform, channel, received timestamp, elapsed seconds,
+message ID and service metadata. `chat.status.json` reports collector state.
+Connection failures reconnect without stopping video; gaps are not backfilled.
+Chat failure cannot certify that an empty archive means nobody chatted.
+
+Publication writes `<media-stem>.chat.json` atomically, verifies an existing
+sidecar on retry, and keeps scratch data if publication fails. Segmented jobs
+include messages in that segment's elapsed-time window; a full-broadcast
+`<broadcast-stem>.chat.json` is also published before source retirement. Elapsed
+receive times are approximate context rather than frame-aligned subtitles,
+particularly when ads or network stalls interrupt video. Interrupted JSONL stays
+with the capture for recovery. Local sidecars are not uploaded to YouTube.
+
+## Status monitoring and notifications
+
+### HTTP dashboard
+
+Enable `HTTP_STATUS_ENABLED=true` and map the container port:
+
+```yaml
+environment:
+  - HTTP_STATUS_ENABLED=true
+ports:
+  - "127.0.0.1:8080:8080"
+```
+
+Open `http://localhost:8080/` for the dashboard, or use `/status.json` for
+dashboards such as Homepage, Dashy, or Homarr. It shows the current capture,
+elapsed time, captured size, queue depths, and free disk space, refreshing every
+five seconds. `/healthz` serves the same status snapshot. Missing or unreadable
+status returns HTTP 503 until the exporter produces a valid snapshot.
+
+The server only exposes these fixed read-only routes, with no file browsing or
+control actions. It has no built-in authentication; the example binds the host
+port to loopback. Use your existing trusted network or authenticated reverse
+proxy for remote access. Docker health checks include the HTTP worker when enabled.
+
+### Notification providers
+
+The durable outbox supports the existing Discord setup and four additional
+providers. Select one provider per container. All public live/upload events and
+operational alerts use that provider; Discord URLs are unnecessary for other
+providers. `NOTIFICATION_ON_ERROR=false` disables operational events.
+
+| Provider | Configuration | Request |
+| --- | --- | --- |
+| `discord` | Existing `DISCORD_*` variables | Existing rich embeds and persistent status message. |
+| `webhook` | `NOTIFICATION_URL`, optional `NOTIFICATION_TOKEN` | JSON with `title`, `message`, `url`, `channel`, and `platform`; optional bearer authentication. |
+| `ntfy` | `NOTIFICATION_URL=https://ntfy.example/topic`, optional token | UTF-8 message body with a title header; optional bearer authentication. |
+| `gotify` | `NOTIFICATION_URL=https://gotify.example/message`, `NOTIFICATION_TOKEN` | JSON title/message/priority and an application-token header. |
+| `telegram` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Plain-text `sendMessage`; no Markdown parsing. |
+
+Webhook, ntfy, and Gotify may use `NOTIFICATION_MONITOR_URL` for a separate
+operational destination. Telegram sends both event types to its configured chat.
+Provider requests run only in the notification worker, retaining failed events
+and honoring rate-limit delays, including Telegram `parameters.retry_after`.
+Permanent HTTP 400/401/404 responses retain an `.invalid` event for inspection.
+Changing providers reroutes pending events to the newly configured destination.
+The persistent editable status message remains a Discord feature; other providers
+receive event alerts and can use the independent HTTP dashboard for status.
 
 ### JSON status exporter (`status.json`)
 

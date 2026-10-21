@@ -345,6 +345,30 @@ def public(report):
     return {key: value for key, value in report.items() if not key.startswith('_')}
 
 
+def audio_track(job):
+    path = pathlib.Path(job) / 'audio-track'
+    policy = path.read_text().strip() if path.exists() else 'all'
+    if policy not in ('all', '1', '2'):
+        raise UnsafeMedia('Invalid recorded audio-track policy')
+    return policy
+
+
+def select_audio_report(report, policy):
+    if policy == 'all':
+        return report
+    audio = [i for i, kind in enumerate(report['stream_types']) if kind == 'audio']
+    if len(audio) < int(policy):
+        raise UnsafeMedia(f'Requested audio track {policy} is absent; original capture retained')
+    indices = [i for i, kind in enumerate(report['stream_types']) if kind == 'video' or i == audio[int(policy) - 1]]
+    result = report.copy()
+    for key in ('signature', 'packets', 'stream_types', 'track_ids', 'start_times',
+                'packet_hashes', 'packet_timing_hashes', 'frames', 'samples',
+                'frame_hashes', 'timing_hashes', 'decoded_start', 'decoded_duration'):
+        if key in result:
+            result[key] = [result[key][i] for i in indices]
+    return result
+
+
 def compare(expected, actual, lossless=True, packet_copy=False):
     if expected['stream_types'] != actual['stream_types']:
         if sorted(expected['stream_types']) != sorted(actual['stream_types']):
@@ -420,6 +444,7 @@ def combined(reports):
 
 def normalize(job):
     job = pathlib.Path(job).resolve()
+    policy = audio_track(job)
     if (job / 'uploaded').exists() or (job / 'published.sha256').exists():
         raise UnsafeMedia('Legacy success receipt requires manual reconciliation before normalization')
     source = next((job / name for name in ('capture.bin', 'media.ts', 'media.mp4')
@@ -450,6 +475,15 @@ def normalize(job):
                         raise UnsafeMedia('Declared track missing from demuxer') from error
                     if track['samples'] != report['packets'][index]:
                         raise UnsafeMedia('Declared MP4 samples were not fully demuxed')
+            if policy != 'all':
+                period['source_validation'] = public(report)
+                expected_audio = select_audio_report(report, policy)
+                selected = work / f'selected-{i:04d}.mp4'
+                tools.run('select-audio', ['ffmpeg', '-nostdin', '-v', 'warning', '-n', '-i', str(path),
+                    '-map', '0:v?', '-map', f'0:a:{int(policy) - 1}', '-c', 'copy', '-f', 'mp4', str(selected)])
+                actual = tools.inspect(selected, work)
+                compare(expected_audio, actual)
+                path, report = selected, actual
             prepared.append((path, report, period))
         groups = []
         for item in prepared:
@@ -460,15 +494,16 @@ def normalize(job):
         output_parts = work / 'parts'
         output_parts.mkdir()
         manifest = {'version': 1, 'capture': {'file': source.name, 'sha256': source_hash,
-                    'format': container, 'size': source.stat().st_size}, 'periods': [], 'parts': []}
+                    'format': container, 'size': source.stat().st_size, 'audio_track': policy}, 'periods': [], 'parts': []}
         for i, (path, report, period) in enumerate(prepared, 1):
             manifest['periods'].append({'number': i, 'start': period['start'], 'end': period['end'],
-                'tracks': period['tracks'], 'validation': public(report)})
+                'tracks': period['tracks'], 'validation': public(report),
+                **({'source_validation': period['source_validation']} if 'source_validation' in period else {})})
         pending = list(groups)
         while pending:
             group = pending.pop(0)
             number = len(manifest['parts']) + 1
-            extension = 'ts' if container == 'mpegts' and not remux else 'mp4'
+            extension = 'ts' if container == 'mpegts' and not remux and policy == 'all' else 'mp4'
             candidate = output_parts / f'{number:04d}.{extension}'
             expected = combined([item[1] for item in group])
             try:

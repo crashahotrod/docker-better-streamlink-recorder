@@ -14,6 +14,7 @@ import time
 
 import media
 from notifications import atomic_json, enqueue, lock
+from chat_archive import publish_session
 from segment_capture import (Capture, CaptureError, FIELDS, LowSpace, MAX_DURATION,
                              Source, receipt_data, report_receipt, require_space,
                              state, verify_session_source)
@@ -44,7 +45,7 @@ class Replay(Capture):
             if index in self.known:
                 require_space(self.work, (job / 'capture.bin').stat().st_size)
                 tools = media.Tools(job / 'diagnostics' / 'recovery-compare')
-                report = tools.inspect(job / 'capture.bin', job)
+                report = media.select_audio_report(tools.inspect(job / 'capture.bin', job), media.audio_track(job))
                 if report_receipt([report], epoch['number']) != self.known[index]:
                     raise CaptureError(f'Rebuilt segment {index} differs from existing job/receipt')
                 # Only generated replay output is removed; acknowledged jobs remain untouched.
@@ -77,7 +78,7 @@ def existing_children(work, session, parent, manifest):
             else:
                 require_space(work, (job / 'capture.bin').stat().st_size)
                 report = media.Tools(job / 'diagnostics' / 'recovery-compare').inspect(job / 'capture.bin', job)
-                known[index] = report_receipt([report], int((job / 'segment-epoch').read_text()))
+                known[index] = report_receipt([media.select_audio_report(report, media.audio_track(job))], int((job / 'segment-epoch').read_text()))
     if any(index not in known for index in manifest['segments']):
         raise CaptureError('A sealed child has neither a job nor a publication receipt')
     return known, jobs
@@ -87,6 +88,8 @@ def prepare_job(session, destination, index, epoch, source):
     destination.mkdir(parents=True)
     for field in (*FIELDS, 'started-at'):
         shutil.copyfile(session / field, destination / field)
+    if (session / 'audio-track').exists():
+        shutil.copyfile(session / 'audio-track', destination / 'audio-track')
     for field, value in (('segment-index', index), ('segment-parent', session.name[10:]),
                          ('segment-epoch', epoch), ('segmenter-output', 'true')):
         state(destination / field, value)
@@ -99,6 +102,7 @@ def prepare_job(session, destination, index, epoch, source):
 def closed_candidates(session, staging, known):
     """The common disconnect path needs validation only, with no additional remux."""
     found = set(known)
+    chat_offset = 0.0
     for listing in sorted(session.glob('epoch-*.csv')):
         match = re.fullmatch(r'epoch-([1-9][0-9]*)\.csv', listing.name)
         if not match:
@@ -112,6 +116,8 @@ def closed_candidates(session, staging, known):
             if not match_file or not math.isfinite(duration) or not 0 < duration <= MAX_DURATION:
                 raise CaptureError('Invalid closed segment metadata')
             index = int(match_file[1])
+            chat_start = chat_offset
+            chat_offset += duration
             if index in known:
                 continue
             if index in found:
@@ -122,6 +128,8 @@ def closed_candidates(session, staging, known):
             destination = staging / 'normalize' / f'{session.name}.seg{index}'
             prepare_job(session, destination, index, int(match[1]), source)
             state(destination / 'segment-duration', duration)
+            state(destination / 'chat-start', chat_start)
+            state(destination / 'chat-end', chat_offset)
             found.add(index)
 
 
@@ -163,6 +171,8 @@ def recover_locked(work, session):
             job.mkdir()
             for field in (*FIELDS, 'started-at'):
                 shutil.copyfile(session / field, job / field)
+            if (session / 'audio-track').exists():
+                shutil.copyfile(session / 'audio-track', job / 'audio-track')
             target = int(manifest.get('segment_seconds', os.environ.get('YOUTUBE_SEGMENT_SECONDS', '21600')))
             replay = Replay(job, target, known)
             os.link(source, replay.session / 'capture.bin')
@@ -192,11 +202,13 @@ def recover_locked(work, session):
                 job.rename(work / 'normalize' / job.name)
         manifest.update(status='completed', segments=indices, source_periods=periods, recovered_at=int(time.time()))
         state(session / 'segment-count', len(indices))
+        publish_session(session, os.environ.get('STORAGE_DIR', '/storage'), os.environ.get('CHANNEL', work.parent.name))
         state(session / 'broadcast-finished', 'true')
         atomic_json(manifest_path, manifest)
         # An interrupted broadcast never emits the successful broadcast completion alert.
         if os.environ.get('DISCORD_NOTIFY_ON_ERROR', 'true') != 'false' and (
-                os.environ.get('DISCORD_MONITOR_WEBHOOK_URL') or os.environ.get('DISCORD_WEBHOOK_URL')):
+                os.environ.get('DISCORD_MONITOR_WEBHOOK_URL') or os.environ.get('DISCORD_WEBHOOK_URL') or
+                os.environ.get('NOTIFICATION_PROVIDER', 'discord') != 'discord'):
             enqueue(work, 'monitor', {'embeds': [{'title': 'Interrupted recording recovered',
                 'description': f'{session.name}: verified saved segments queued; original retained until publication audit.',
                 'color': 15105570}]})

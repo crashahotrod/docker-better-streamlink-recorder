@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streamlink Recorder</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#111827;color:#e5e7eb}*{box-sizing:border-box}body{margin:auto;max-width:1040px;padding:36px 24px}header{display:flex;align-items:center;justify-content:space-between;gap:16px}h1{font-size:1.65rem;letter-spacing:-.03em;margin:4px 0}h2{font-size:1rem;font-weight:500;color:#9ca3af;margin:0 0 16px}.eyebrow{color:#60a5fa;font-size:.75rem;letter-spacing:.14em;text-transform:uppercase}.badge{padding:8px 14px;border:1px solid #374151;border-radius:30px;text-transform:capitalize}.badge[data-state=recording]{color:#6ee7b7;border-color:#047857}.badge[data-state=error]{color:#fca5a5;border-color:#991b1b}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin:28px 0}.card{background:#1f2937;border:1px solid #374151;border-radius:12px;padding:24px}.wide{grid-column:1/-1}.title{font-size:1.25rem;overflow-wrap:anywhere}.stats,.queues{display:flex;gap:24px;flex-wrap:wrap;margin-top:20px}.stat strong{display:block;font-size:1.55rem;font-variant-numeric:tabular-nums;font-weight:550}.stat span,footer{font-size:.8rem;color:#9ca3af}.queues .stat{flex:1;min-width:92px}#error{color:#fca5a5}a{color:#93c5fd}footer{display:flex;gap:18px;justify-content:space-between;flex-wrap:wrap}@media(max-width:600px){body{padding:24px 16px}.grid{grid-template-columns:1fr}.card{padding:20px}header{align-items:flex-start}}
+</style>
+<header><div><div class="eyebrow">Stream archive</div><h1 id="channel">Streamlink Recorder</h1><span id="platform"></span></div><span id="state" class="badge">Connecting</span></header>
+<p id="error" role="status" aria-live="polite"></p>
+<main class="grid">
+<section class="card wide"><h2>Active capture</h2><div id="title" class="title">Waiting for status…</div><div class="stats"><div class="stat"><strong id="duration">—</strong><span>Elapsed</span></div><div class="stat"><strong id="size">—</strong><span>Captured</span></div><div class="stat"><strong id="segment">—</strong><span>Segment</span></div></div></section>
+<section class="card wide"><h2>Processing queues</h2><div id="queues" class="queues"></div></section>
+<section class="card"><h2>Scratch storage</h2><div class="stat"><strong id="scratch">—</strong><span>Free space</span></div></section>
+<section class="card"><h2>Archive storage</h2><div class="stat"><strong id="storage">—</strong><span>Free space</span></div></section>
+</main>
+<footer><span id="updated">Refreshes every 5 seconds</span><a href="/status.json">JSON status →</a></footer>
+<script>
+const set=(id,value)=>document.getElementById(id).textContent=String(value??'—');
+async function refresh(){
+ try{
+  const response=await fetch('/status.json',{cache:'no-store',signal:AbortSignal.timeout(4000)});
+  if(!response.ok)throw Error('Status is not available yet. Retrying…');
+  const data=await response.json(), active=data.active_capture, disk=data.disk_space||{};
+  set('channel',data.channel);set('platform',String(data.mode||'').toUpperCase());set('state',data.status);
+  document.getElementById('state').dataset.state=data.status;
+  set('title',active?.title||'No active capture');set('duration',active?.total_duration_human||active?.duration_human);
+  set('size',active?.size_human);set('segment',active?.segment_index);set('scratch',disk.scratch_free_gb+' GiB');set('storage',disk.storage_free_gb+' GiB');
+  const queues=document.getElementById('queues');queues.replaceChildren();
+  for(const [name,count] of Object.entries(data.queues||{})){
+   const item=document.createElement('div'),number=document.createElement('strong'),label=document.createElement('span');
+   item.className='stat';number.textContent=count;label.textContent=name.charAt(0).toUpperCase()+name.slice(1);item.append(number,label);queues.append(item);
+  }
+  set('updated','Updated '+new Date(data.updated_at).toLocaleString());set('error','');
+ }catch(error){set('error',error.message||'Status connection lost. Retrying…');}
+ finally{setTimeout(refresh,5000);}
+}refresh();
+</script>
+</html>

@@ -19,6 +19,7 @@ services:
       # Quote individual values with spaces, e.g. --http-header "X-Recorder=archive worker"
       # Twitch ads are filtered automatically; legacy --twitch-disable-ads/--twitch-disable-reruns have no effect.
       # - AUTO_RECOVER_INTERRUPTED=false # Auto-recover and process interrupted captures (default false)
+      # - WINDOWS_SAFE_FILENAMES=false # Restrict filenames to Windows OS safe characters (default false)
       # Optional encoding customization (when ENCODE=true)
       # - ENCODE_ACCEL=auto # auto (infer from codec), cpu, nvenc, vaapi, qsv
       # - ENCODE_CRF=23 # CPU x264/x265/libsvtav1 quality (0-51)

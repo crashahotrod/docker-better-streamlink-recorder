@@ -231,4 +231,37 @@ rm -- "$retired/normalized.json"
 eval "$cleanup_definition"
 run_queue_once publish publish_recording
 [[ ! -d "$retired" ]]
+# Windows safe filenames flag behavior:
+# Default behavior keeps valid Linux characters in stem, only replacing / with -
+default_stem=''
+WINDOWS_SAFE_FILENAMES=false new_recording_job $'unsafe:title "with" <special> *chars* / and \\ backslash | and ?' 'Author/Name:Test?' 801
+read_field "$RECORDING_JOB/stem" default_stem
+[[ "$default_stem" == 'Author-Name:Test? - s'*' - unsafe:title "with" <special> *chars* - and \ backslash | and ? - {edition-twitch} - 801-'* ]]
+
+# When WINDOWS_SAFE_FILENAMES=true, reserved Windows characters (<>:"/\|?* and control chars) are replaced with -
+win_stem=''
+WINDOWS_SAFE_FILENAMES=true new_recording_job $'unsafe:title "with" <special> *chars* / and \\ backslash | and ? and \x01\x1f' 'Author/Name:Test?' 802
+read_field "$RECORDING_JOB/stem" win_stem
+python3 - "$win_stem" <<'PY'
+import re, sys
+stem = sys.argv[1]
+assert not re.search(r'[\x00-\x1f\x7f<>:"/\\|?*]', stem), f"Forbidden chars found in: {stem}"
+PY
+[[ "$win_stem" == 'Author-Name-Test- - s'*' - unsafe-title -with- -special- -chars- - and - backslash - and - and -- - {edition-twitch} - 802-'* ]]
+
+# Singular alias WINDOWS_SAFE_FILENAME=true behaves identically
+alias_stem=''
+WINDOWS_SAFE_FILENAMES='' WINDOWS_SAFE_FILENAME=true new_recording_job 'Title: Test?' 'Author:Name' 803
+read_field "$RECORDING_JOB/stem" alias_stem
+[[ "$alias_stem" == 'Author-Name - s'*' - Title- Test- - {edition-twitch} - 803-'* ]]
+
+# part_destination produces a Windows safe path when WINDOWS_SAFE_FILENAMES=true
+printf '{"parts":[{"id":"0001"}]}\n' > "$RECORDING_JOB/normalized.json"
+win_final=$(WINDOWS_SAFE_FILENAMES=true part_destination "$RECORDING_JOB" 0001 mp4)
+python3 - "$win_final" <<'PY'
+import pathlib, re, sys
+filename = pathlib.Path(sys.argv[1]).name
+assert not re.search(r'[\x00-\x1f\x7f<>:"/\\|?*]', filename), f"Forbidden chars in destination: {filename}"
+PY
+
 printf 'PASS: retained inputs, per-part receipts, retries, locks and crash recovery\n'

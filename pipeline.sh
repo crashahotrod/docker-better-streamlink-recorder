@@ -437,6 +437,14 @@ part_destination() {
     elif (( count > 1 )); then
         stem="$stem - part-$id"
     fi
+    if [[ "${WINDOWS_SAFE_FILENAMES:-${WINDOWS_SAFE_FILENAME:-false}}" == true ]]; then
+        stem=$(python3 - "$stem" <<'PY'
+import re
+import sys
+print(re.sub(r'[\x00-\x1f\x7f<>:"/\\|?*]', '-', sys.argv[1]), end='')
+PY
+        ) || return 1
+    fi
     printf '%s/%s/Season %s/%s.%s\n' "$STORAGE_DIR" "$CHANNEL" "$season" "$stem" "$extension"
 }
 
@@ -515,15 +523,23 @@ new_recording_job() {
     # Reserve bytes for extension and a unique recording identifier; truncate
     # only the title, without cutting a UTF-8 codepoint in half.
     stem=$(python3 - "$author" "$title" "$season" "$episode" "$MODE" \
-        "$stream_id" "${RECORDING_JOB##*/}" "${YOUTUBE_SPLITTING:-false}" <<'PY'
+        "$stream_id" "${RECORDING_JOB##*/}" "${YOUTUBE_SPLITTING:-false}" \
+        "${WINDOWS_SAFE_FILENAMES:-${WINDOWS_SAFE_FILENAME:-false}}" <<'PY'
+import re
 import sys
-author, title, season, episode, mode, stream, identifier, splitting = sys.argv[1:]
-prefix = f'{author.replace("/", "-")} - s{season}e{episode} - '
+author, title, season, episode, mode, stream, identifier, splitting, windows_safe = sys.argv[1:]
+if windows_safe.lower() in ('true', '1', 'yes'):
+    author = re.sub(r'[\x00-\x1f\x7f<>:"/\\|?*]', '-', author)
+    title = re.sub(r'[\x00-\x1f\x7f<>:"/\\|?*]', '-', title)
+else:
+    author = author.replace('/', '-')
+    title = title.replace('/', '-')
+prefix = f'{author} - s{season}e{episode} - '
 suffix = f' - {{edition-{mode}}} - {stream}-{identifier}'
 budget = (200 if splitting == 'true' else 224) - len((prefix + suffix).encode('utf-8'))
 if budget < 0:
     raise SystemExit('Recording identity exceeds filename limit')
-safe = title.replace('/', '-').encode('utf-8')[:budget].decode('utf-8', 'ignore')
+safe = title.encode('utf-8')[:budget].decode('utf-8', 'ignore')
 print(prefix + safe + suffix, end='')
 PY
     ) || return 1

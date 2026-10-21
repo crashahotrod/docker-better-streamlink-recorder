@@ -16,7 +16,10 @@ validate_environment() {
         echo 'ERROR: CHANNEL must be a channel slug without path separators.' >&2
         errors=1
     fi
-    for name in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED; do
+    if [[ -n "${WINDOWS_SAFE_FILENAME:-}" && -z "${WINDOWS_SAFE_FILENAMES:-}" ]]; then
+        export WINDOWS_SAFE_FILENAMES="$WINDOWS_SAFE_FILENAME"
+    fi
+    for name in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED WINDOWS_SAFE_FILENAMES; do
         value="${!name:-false}"
         case "$value" in true|false) ;; *) printf 'ERROR: %s must be true or false.\n' "$name" >&2; errors=1 ;; esac
         export "$name=$value"

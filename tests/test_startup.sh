@@ -7,10 +7,11 @@ TEST_ROOT=$(mktemp -d)
 trap 'find "$TEST_ROOT" -depth -delete' EXIT
 export MODE=twitch CHANNEL=test CLIENT_ID=example CLIENT_SECRET=example USER_NAME=apps
 export CONFIG_DIR="$TEST_ROOT/config"
-unset UPLOAD ENCODE REMUX YOUTUBE_SPLITTING TWITCH_USER_TOKEN
+unset UPLOAD ENCODE REMUX YOUTUBE_SPLITTING TWITCH_USER_TOKEN WINDOWS_SAFE_FILENAMES WINDOWS_SAFE_FILENAME
 validate_environment
-[[ "$UPLOAD" == false && "$ENCODE" == false ]]
+[[ "$UPLOAD" == false && "$ENCODE" == false && "$WINDOWS_SAFE_FILENAMES" == false ]]
 [[ "$QUARANTINE_RETENTION_DAYS" == 7 ]]
+(unset WINDOWS_SAFE_FILENAMES; WINDOWS_SAFE_FILENAME=true; validate_environment; [[ "$WINDOWS_SAFE_FILENAMES" == true ]])
 validate_upload_credentials
 for UPLOAD in false true; do
     for ENCODE in false true; do
@@ -33,7 +34,7 @@ for variable in MODE CHANNEL CLIENT_ID CLIENT_SECRET USER_NAME; do
         echo "Missing $variable accepted" >&2; exit 1
     fi
 done
-for variable in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL; do
+for variable in UPLOAD ENCODE REMUX YOUTUBE_SPLITTING AUTO_RECOVER_INTERRUPTED YOUTUBE_UPLOAD_THUMBNAIL WINDOWS_SAFE_FILENAMES; do
     if (export "$variable=invalid"; validate_environment 2>/dev/null); then
         echo "Invalid $variable accepted" >&2; exit 1
     fi

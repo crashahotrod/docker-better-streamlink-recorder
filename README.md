@@ -32,6 +32,7 @@ two platform-test helpers; local secrets, volumes and generated artifacts are ex
 | `STREAM_QUALITY` | `best` | Stream quality string passed to Streamlink (e.g. `1080p60,720p60,best`). |
 | `STREAMLINK_EXTRA_ARGS` | Unset | Extra arguments passed to Streamlink, with shell-style quoting (e.g. `--twitch-low-latency`). See recipes below. |
 | `AUTO_RECOVER_INTERRUPTED` | `false` | Automatically recover orphaned unsplit captures and validate/recover stopped segmented sessions before the next live-status check. |
+| `WINDOWS_SAFE_FILENAMES` | `false` | Restrict stored recording filenames to Windows OS safe characters (`<>:"/\|?*` and control characters replaced with `-`). |
 | `REMUX` | `false` | After capture, stream-copy TS to MP4. MP4 input is normalized as MP4 regardless of this flag. |
 | `ENCODE` | `false` | Convert completed recordings to H.264/AAC MP4. |
 | `ENCODE_ACCEL` | `auto` | `auto`, `cpu`, `nvenc`, `vaapi`, or `qsv`. Auto infers the backend from `ENCODE_VIDEO_CODEC`, using CPU by default. |
@@ -242,8 +243,10 @@ The processing route follows normalization:
 
 Stored recordings use `<channel>/Season YYYYMM/` with Plex-style season and
 episode names. Each filename includes a stream identifier and unique recording
-suffix so segments and reconnects do not overwrite each other. MP4 files receive
-title metadata; TS files retain their title in the filename. Validation checks decoding, video frame counts and identity, timing, audio coverage,
+suffix so segments and reconnects do not overwrite each other. When `WINDOWS_SAFE_FILENAMES=true`
+is set, reserved Windows characters (`<>:"/\|?*` and control characters) in the title and author
+are replaced with `-` to ensure compatibility with Windows filesystems and SMB shares.
+MP4 files receive title metadata; TS files retain their title in the filename. Validation checks decoding, video frame counts and identity, timing, audio coverage,
 and MP4 sample accounting. Encoding must preserve the verified video frame count
 and timing. The original capture is removed only after every part is published
 and checksummed.

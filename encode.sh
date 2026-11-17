@@ -1,28 +1,59 @@
 #!/bin/bash
-MONITORDIR="/etc/streamlink/scratch/$MODE/$CHANNEL/encode"
-STORAGE_DIR="/storage"
+set -uo pipefail
+# shellcheck source=pipeline.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/pipeline.sh"
 
-#: "${CHANNEL:?Need CHANNEL}"
+encode_job() {
+    local job="$1" id input output
+    local abitrate arg custom_filter=false
+    local -a extra_encode_args=()
+    abitrate="${ENCODE_AUDIO_BITRATE:-128k}"
+    build_encoding_args || return 1
+    if [[ -n "${ENCODE_EXTRA_ARGS:-}" ]]; then
+        load_extra_args extra_encode_args "$ENCODE_EXTRA_ARGS" || return 1
+    fi
+    if [[ "$ENCODER_ACCEL" == vaapi ]]; then
+        for arg in "${extra_encode_args[@]}"; do
+            case "$arg" in
+                -vf|-vf=*|-filter:v*|-filter_complex*|-lavfi) custom_filter=true ;;
+            esac
+        done
+        # Custom graphs take precedence and must supply their own hardware upload.
+        if [[ "$custom_filter" == false ]]; then
+            ENCODER_VIDEO_ARGS+=(-vf 'format=nv12,hwupload')
+        fi
+    fi
+    ensure_normalized_job "$job" || return 1
+    while IFS= read -r id; do
+        if part_committed "$job" "$id" mp4; then continue; fi
+        input=$(part_file "$job" "$id") || return 1
+        output="$job/parts/$id.encoded.mp4"
+        if ! ffmpeg -nostdin -y -v warning "${ENCODER_INPUT_ARGS[@]}" -i "$input" -map '0:v?' -map '0:a?' \
+            -fps_mode passthrough -enc_time_base:v -1 "${ENCODER_VIDEO_ARGS[@]}" -c:a aac \
+            -b:a "$abitrate" "${extra_encode_args[@]}" -f mp4 "$output" 2> "$job/diagnostics/encode-$id.stderr"; then
+            if [[ "${ENCODE_FALLBACK_CPU:-false}" != true || "$ENCODER_ACCEL" == cpu ]]; then
+                log_failure 'Encoding failed; capture retained' "$job"
+                return 1
+            fi
+            log_failure 'Hardware encoding failed; retrying once with libx264 on CPU' "$job"
+            # Hardware presets, devices, filters and extra codec options are not CPU compatible.
+            # Verification reads encode-ID.stderr, so it must describe the CPU attempt.
+            mv -f -- "$job/diagnostics/encode-$id.stderr" "$job/diagnostics/encode-$id-hardware.stderr" || return 1
+            if ! ffmpeg -nostdin -y -v warning -i "$input" -map '0:v?' -map '0:a?' \
+                -fps_mode passthrough -enc_time_base:v -1 -c:v libx264 \
+                -crf "${ENCODE_CRF:-23}" -preset medium -c:a aac -b:a "$abitrate" \
+                -f mp4 "$output" 2> "$job/diagnostics/encode-$id.stderr"; then
+                log_failure 'CPU fallback failed; capture retained' "$job"
+                return 1
+            fi
+        fi
+        verify_part "$job" "$id" "$output" --encoded || return 1
+        publish_part "$job" "$id" "$output" || return 1
+    done < <(part_ids "$job")
+    remove_completed_job "$job" || return 1
+    prune_old_recordings
+}
 
-inotifywait -m -r --format '%w%f' --include ".*\.(ts|mp4)$" -e MOVED_TO "$MONITORDIR" | while read NEWFILE
-do
-    echo "INW is "$NEWFILE""
-    FILENAME="$(basename "$NEWFILE")"
-    echo "FN is: $FILENAME"
-    STREAMTITLE="$(echo $FILENAME | sed -E 's/^[^-]+ - s[0-9]+e[0-9]+ - | - \{[^}]*\}| - [0-9]+|\.(ts|mp4)$//g; s/</＜/g; s/>/＞/g')"
-    echo "ST is: "$STREAMTITLE""
-    MP4=$(echo "$FILENAME" | sed 's/\.ts$/.mp4/')
-    echo "MP4 is: "$MP4""
-    MP4PATH=$(echo "$NEWFILE" | sed 's/\.ts$/.mp4/')
-    echo "MP4PATH is "$MP4PATH""
-    echo "Will try and execute ffmpeg -i "$NEWFILE" -c:v libx264 -crf 23 -preset medium -c:a aac -b:a 128k "$MP4PATH""
-    ffmpeg -i "$NEWFILE" -c:v libx264 -crf 23 -preset medium -c:a aac -b:a 128k "$MP4PATH"
-    echo "Will try and execute rm -rf "$NEWFILE""
-    rm -rf "$NEWFILE"
-    echo "Will try and execute exiftool -title=\"$STREAMTITLE\" -api largefilesupport=1 -overwrite_original \"$MONITORDIR/$MP4\""
-    exiftool -title="$STREAMTITLE" -api largefilesupport=1 -overwrite_original "$MONITORDIR/$MP4"
-    sleep 2
-    FOLDERDATE=$(date +%Y%m)
-    mkdir -p "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE"  
-    mv "$MP4PATH" "$STORAGE_DIR/$CHANNEL/Season $FOLDERDATE/$MP4"
-done
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    run_worker encode encode_job
+fi

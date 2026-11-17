@@ -1,0 +1,83 @@
+# Test suite
+
+Run `bash tests/run.sh` as a non-root user on Linux with Bash, Python 3,
+FFmpeg/ffprobe (libx264), ExifTool, jq, ShellCheck, Supervisor, and util-linux.
+Python discovery uses `/usr/bin/python3` so it can import the system Supervisor
+package. The runner checks shell syntax and ShellCheck before behavioral tests.
+Use `bash tests/run.sh --lint-only` to run just syntax and ShellCheck. CI runs
+this on the host and the complete behavioral suite once in the AMD64 image.
+
+| Behavior | Coverage |
+| --- | --- |
+| Real dual-audio preservation/selection, missing-track retention, encoded publication and chat sidecar cleanup ordering | `test_audio_tracks.py` |
+| Webhook/ntfy/Gotify/Telegram payloads, credentials, rate limits, failed delivery retention and producers without Discord | `test_notification_providers.py` |
+| IRC/Pusher parsing, ping responses, reconnect persistence, collector shutdown, sidecar collisions and segment/full-broadcast chat ranges | `test_chat_archive.py` |
+| Real loopback HTTP dashboard/JSON, atomic updates, unavailable status, HEAD, rejected writes and fixed paths | `test_status_server.py` |
+| Twitch/Kick tokens, HTTP/transport failures, Kick resolver fallback and timeouts, monitor decisions, quoted recording arguments, malformed quoting, optional authentication, empty/missing-output abort cleanup, and nonempty recovery | `test_download.sh` |
+| POSIX argument quoting, Unicode/newlines, escaped spaces, empty/literal tokens, parser error propagation and actual encoder argument boundaries | `test_extra_args.sh` |
+| CPU/NVENC/VAAPI/QSV options, codec inference, custom filters, configuration conflicts, opt-in CPU fallback and retained jobs when both attempts fail | `test_encoding.sh`, `test_pipeline.sh` |
+| Unsplit scratch guard at the threshold, SIGINT shutdown with retained bytes, disabled guard, child exit codes, stuck-process escalation and supervisor termination | `test_capture.py` |
+| Required settings, boolean flags, upload visibility, missing credentials | `test_startup.sh` |
+| Discord local outbox producers, failed enqueue isolation, live recorder locks/heartbeats, stalled captures and channel/mode status isolation on shared scratch | `test_notifications.sh` |
+| Discord payload limits/mentions, durable retries, shared rate limits, persistent-message lifecycle, webhook rotation/query parameters and worker exclusion | `test_discord.py` |
+| Worker health, quota resets/client identity, quarantine retention, storage sidecar pruning, literal/prefix stem ownership, shared versions, locks, symlinks and failed deletion | `test_operations.py` |
+| Upload success receipts before notification work and both API-quota/upload-count cooldowns shared across channel workers | `test_upload_operations.sh` |
+| Continuous downstream splitting, processing flags, live HLS, codec/init changes, child status/naming, source audits, empty abort/launch cleanup, nonempty retention, interrupted session recovery, idempotency, MP4 reconstruction, writer exclusion, receipt identity and disk exhaustion | `test_segmentation.py` |
+| MP4 initialization periods, compatible joins, codec/track changes, audio-first inputs, audio offsets/settings, B-frames, variable timing, truncated/uncertain inputs, sample counts, complete manifest accounting, source/output checksums, CLI validation, error diagnostics | `test_media_normalization.py` |
+| Real TS capture and metadata through all 16 service/remux/upload/encode routes, all visibility choices, VFR encoding, separate filesystems, denied destination writes, capture retention, interrupted encode/normalization and simulated disk-full recovery | `test_media.sh` |
+| Quarantine at consumer boundaries, real encoding with quoted filters/metadata, per-part receipts, retries, locks, collisions, partial copies, changed files, interrupted cleanup and offline recovery | `test_pipeline.sh` |
+| Backoff deadlines/cap, invalid retry state, queue progress despite failures, one-pass workers, completion handoff recovery, duplicate-monitor exclusion, persisted flags, Unicode filename limits and recovery path boundaries | `test_queue.sh` |
+| Worker enable/disable flags and process-group shutdown configuration | `test_supervisor.py` |
+| Stable-release dependency selection, immutable commit pins and failure without partial updates | `test_dependency_updates.py` |
+| Registry staging of the loaded test image, platform identity, digest-only manifest assembly, failed pushes, stale/missing receipts and same-run retries | `test_ci_publication.py` |
+| Fresh/reused volumes, queue directories, unreadable credentials, render-node group access after gosu and private checkout isolation | `test_permissions.sh`, `test_permissions_isolation.sh` |
+| Built entrypoint, persisted captures, actual workers for both services and every upload/encode flag combination, image dependencies and full HLS processing matrix | `test_container.sh` |
+| Uploader/Streamlink execution and complete codec-change repair/publication on each advertised architecture | `test_platform.sh` |
+| Known critical/high dependency vulnerabilities with available fixes; public database download separated from network-isolated image analysis | `scan_image.sh` |
+
+The permission checks run separately as root against an existing non-root user:
+
+```sh
+sudo TEST_APP_USER=recorder-test bash tests/test_permissions.sh
+sudo TEST_APP_USER=recorder-test bash tests/test_permissions_isolation.sh
+```
+
+Build and check the image with `docker build -t streamlink-recorder:test .` followed
+by `bash tests/test_container.sh`. The image runs the same behavioral suite using
+`tests/run.sh --behavior-only`, without requiring ShellCheck inside the image.
+Every test container has external networking disabled. Real Streamlink captures
+local HLS from container loopback; uploads and live-service responses are mocked.
+Hardware encoder tests check generated arguments and failed-device handling with
+mocks. Device permissions use a private character-device node. Actual
+NVENC/VAAPI/QSV encoding still requires testing on a host with the relevant GPU.
+The HLS integration test is skipped when Streamlink is unavailable locally and is
+run by the image suite using its own 90-second and six-second fixture periods.
+These long fixtures are generated only for the HLS test, preserving the long
+opening regression without increasing every normalization test's workload.
+
+Run Python discovery with `/usr/bin/python3 -m unittest discover -s tests -p 'test_*.py' -v`,
+or invoke a test file directly. Configure media durations with
+`TEST_MEDIA_INTRO_SECONDS` and `TEST_MEDIA_MAIN_SECONDS`. The independent HLS
+durations use `TEST_HLS_INTRO_SECONDS` and `TEST_HLS_MAIN_SECONDS`. Generated fixtures and
+test volumes are temporary. Set `TEST_ARTIFACT_DIR` to retain failed media/pipeline
+diagnostics; CI uploads these automatically. Expected negative cases log errors
+but must finish with passing assertions and exit zero.
+
+Disk-full behavior is injected without filling a volume. The long-recording
+benchmark remains an optional developer tool (`benchmark_media.py`), separate
+from functional checks. Real-service authentication, remote upload results,
+hours-long recording limits, target-specific browser behavior, player GUI
+compatibility, and behavior on physical target devices require separate integration checks.
+CI builds the AMD64 and ARM64 release architectures in parallel. ARM64 smoke checks
+run on a native ARM64 runner. Both platforms receive the dependency
+scan. Only the AMD64 image runs the complete recording suite. Successful push
+builds stage the already tested images and publish multi-architecture manifests
+by digest after all jobs pass; the publication job does not rebuild an image.
+
+Run `bash tests/scan_image.sh` after building the image to repeat the CI dependency
+scan. Only the database download needs external networking. The image scan has
+networking disabled and retains `security.json` under `TEST_ARTIFACT_DIR` when set.
+It uses Trivy 0.76.0 and excludes vulnerabilities without an available fix.
+Failed scans print a compact package summary while preserving the scan exit code
+and full JSON report. ARMv7 images are no longer published because Debian's
+outdated Chromium packages for that architecture fail the security gate.

@@ -3,20 +3,99 @@ services:
     image: crashahotrod/docker-better-streamlink-recorder
     container_name: streamlinkrecorder
     environment:
-      - MODE=kickortwitch
+      - MODE=twitch # twitch or kick
       - CHANNEL=channelToMonitorHere
       - CLIENT_ID=yourClientID
       - CLIENT_SECRET=yourClientSecret
-      #optional
-      - REMUX=trueorfalse
-      - ENCODE=trueorfalse
-      - UPLOAD=trueorfalse
-      - UPLOAD_BOT_NAME=name
-      - YOUTUBE_SPLITTING=trueorfalse
-      - DISCORD_WEBHOOK_URL=fullurlofdiscordwebhook
-      - TWITCH_USER_TOKEN=yourUserToken #Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
+      # - PUID=1000 # User ID for file permissions in /storage and /etc/streamlink/scratch
+      # - PGID=1000 # Group ID for file permissions in /storage and /etc/streamlink/scratch
+      # Optional recording settings
+      - REMUX=false
+      - ENCODE=false
+      - UPLOAD=false
+      # - STREAM_QUALITY=best # e.g. 1080p60,720p60,best
+      # - TWITCH_AUDIO_TRACK=all # all, 1, or 2; selects only audio streams actually delivered
+      # - ARCHIVE_CHAT=true # Twitch IRC / Kick WebSocket chat JSON sidecars
+      # - STREAM_CHAPTERS=true # Collect title/category changes as MP4 chapters and .chapters.txt
+      # - CHAPTER_POLL_INTERVAL=60 # Metadata poll interval while recording (minimum 15 seconds)
+      # - TWITCH_CHAT_USERNAME= # Optional authenticated IRC login
+      # - TWITCH_CHAT_TOKEN= # IRC token with chat:read; separate from playback token
+      # - KICK_CHATROOM_ID= # Optional override if automatic chatroom lookup is blocked
+      # - STREAMLINK_EXTRA_ARGS=--twitch-low-latency --stream-segment-threads 2
+      # For Kick, replace --twitch-low-latency with --kick-low-latency.
+      # Quote individual values with spaces, e.g. --http-header "X-Recorder=archive worker"
+      # Twitch ads are filtered automatically; legacy --twitch-disable-ads/--twitch-disable-reruns have no effect.
+      # - AUTO_RECOVER_INTERRUPTED=false # Auto-recover and process interrupted captures (default false)
+      # - WINDOWS_SAFE_FILENAMES=false # Restrict filenames to Windows OS safe characters (default false)
+      # Optional encoding customization (when ENCODE=true)
+      # - ENCODE_ACCEL=auto # auto (infer from codec), cpu, nvenc, vaapi, qsv
+      # - ENCODE_CRF=23 # CPU x264/x265/libsvtav1 quality (0-51)
+      # - ENCODE_QUALITY=23 # Hardware CQ/QP/ICQ (0-51, QSV 1-51)
+      # - ENCODE_PRESET=medium # CPU/QSV default medium; NVENC default p4 (p1-p7); unset for VAAPI
+      # - ENCODE_VIDEO_CODEC=libx264 # Auto default; accelerator selects h264_nvenc/h264_vaapi/h264_qsv (or hevc_*/av1_*)
+      # - ENCODE_DEVICE=/dev/dri/renderD128 # VAAPI/QSV; pass the same device below
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility # NVENC with NVIDIA Container Toolkit on host
+      # - ENCODE_AUDIO_BITRATE=128k
+      # - ENCODE_EXTRA_ARGS=-vf "scale=1280:-2,setsar=1" -metadata "comment=Recorded automatically"
+      # Optional YouTube settings (when UPLOAD=true)
+      # - UPLOAD_BOT_NAME=name # Required when UPLOAD=true
+      # - YOUTUBE_PRIVACY=public # public, private, or unlisted
+      # - YOUTUBE_UPLOAD_THUMBNAIL=true # Generate and upload custom video thumbnail (set false for unverified channels)
+      # - YOUTUBE_SPLITTING=false
+      # - YOUTUBE_SEGMENT_SECONDS=21600 # Continuous segment target: 6 hours; range 1-42900 seconds
+      # - YOUTUBE_PLAYLIST_ID= # Playlist ID to append uploaded videos to
+      # - YOUTUBE_TAGS= # Comma-separated tags, e.g. gaming,stream,vod. Supports {channel}, {mode}, {part}
+      # - YOUTUBE_CATEGORY_ID= # e.g. 20 for Gaming
+      # - YOUTUBE_DESCRIPTION= # Custom description template: {channel}, {mode}, {title}, {date}, {part}, {stream_url}
+      # - YOUTUBE_THUMBNAIL_TIMESTAMP=20% # Representative frame after this percentage or HH:MM:SS offset
+      # Optional cloud archive (rclone config at /config/rclone.conf or standard rclone environment)
+      # - RCLONE_REMOTE=b2:my-bucket/archives
+      # - RCLONE_BWLIMIT=8M # Bytes/second; leave unset for unlimited
+      # - RCLONE_RETRIES=3
+      # Optional notifications & monitoring
+      # - NOTIFICATION_PROVIDER=ntfy # discord (default), webhook, ntfy, gotify, telegram
+      # - NOTIFICATION_URL=https://ntfy.example/recordings # Full topic/webhook/Gotify message endpoint
+      # - NOTIFICATION_MONITOR_URL= # Optional separate operational endpoint
+      # - NOTIFICATION_TOKEN= # Optional bearer token, required Gotify application token
+      # - TELEGRAM_BOT_TOKEN= # Required for provider=telegram
+      # - TELEGRAM_CHAT_ID= # Required for provider=telegram
+      # - NOTIFICATION_ON_ERROR=true
+      # - HTTP_STATUS_ENABLED=true # Read-only dashboard, /status.json and Prometheus /metrics
+      # - HTTP_STATUS_PORT=8080
+      # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... # Stream go-live & upload notifications
+      # - DISCORD_MONITOR_WEBHOOK_URL=https://discord.com/api/webhooks/... # Separate monitor webhook for persistent status & operational alerts
+      # - DISCORD_NOTIFY_ON_ERROR=true # Broadcast operational alerts (recording complete, low disk, quarantine, quota; default true)
+      # - DISCORD_USERNAME= # Optional webhook username override (defaults to "Streamlink (<channel>)")
+      # - DISCORD_AVATAR_URL= # Optional webhook avatar image URL
+      # - DISCORD_PING_ROLE_ID= # Ping only this role on go-live alerts
+      # - DISCORD_THREAD_ID= # Existing thread for webhook messages and status edits
+      # - RECORDER_STALE_SECONDS=180 # Error status after monitor/capture inactivity; minimum 150 seconds
+      # - TWITCH_USER_TOKEN=yourUserToken # Disable Ads on Subscribed channels https://streamlink.github.io/cli/plugins/twitch.html#authentication
+      # - MIN_FREE_SPACE_GB=5 # Guardrail: Minimum free GB required on disk before recording (0=disabled)
+      # - RETENTION_DAYS=0 # Prune expired media and matching stem.* sidecars (0=disabled)
+      # - QUARANTINE_RETENTION_DAYS=7 # Delete quarantined jobs after N days (0=keep indefinitely)
+      # - POST_PUBLISH_COMMAND= # Script/command to run after publication ($PUBLISHED_FILE, $PUBLISHED_CHANNEL, $PUBLISHED_MODE)
     restart: always
+    stop_grace_period: 120s
+    # Enable HTTP_STATUS_ENABLED above before publishing the dashboard port.
+    # ports:
+    #   - "127.0.0.1:8080:8080"
     volumes:
       - "streamlink_scratch:/etc/streamlink/scratch"
       - "streamlink_storage:/storage"
       - "streamlink_config:/config"
+    # VAAPI/QSV on Linux: entrypoint grants apps access to the render node's group.
+    # devices:
+    #   - /dev/dri/renderD128:/dev/dri/renderD128
+    # NVENC: request a GPU and set NVIDIA_DRIVER_CAPABILITIES above.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+volumes:
+  streamlink_scratch:
+  streamlink_storage:
+  streamlink_config:

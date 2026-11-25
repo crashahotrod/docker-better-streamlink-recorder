@@ -24,7 +24,7 @@ runs:
         path: |
           ${{ runner.temp }}/recorder-go-mod
           ${{ runner.temp }}/recorder-go-build
-        key: go-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.arch }}-${{ hashFiles('Dockerfile', 'build/uploader-modules.txt') }}
+        key: go-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.arch }}-${{ hashFiles('Dockerfile', 'build/*-modules.txt') }}
         restore-keys: |
           go-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.arch }}-
     # Layer exports do not include cache-mount contents. The actions' post steps

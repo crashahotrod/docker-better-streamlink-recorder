@@ -3,10 +3,11 @@ ENV GOTOOLCHAIN=local
 ARG YTU_RELEASE=v1.25.5
 WORKDIR /src
 RUN git clone --depth 1 --branch "${YTU_RELEASE}" https://github.com/porjo/youtubeuploader.git .
-COPY build/uploader-modules.txt /tmp/uploader-modules.txt
+COPY build/go-modules.txt build/uploader-modules.txt /tmp/
 # Keep upstream application code while replacing vulnerable transitive libraries.
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    xargs go get < /tmp/uploader-modules.txt && go mod tidy && go mod verify && go test ./...
+    cat /tmp/go-modules.txt /tmp/uploader-modules.txt | xargs go get && \
+    go mod tidy && go mod verify && go test ./...
 ARG TARGETARCH
 ARG TARGETVARIANT
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
@@ -15,9 +16,9 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     -o /out/youtubeuploader ./cmd/youtubeuploader
 RUN --mount=type=cache,target=/go/pkg/mod \
     mkdir -p /out/licenses && cp /usr/local/go/LICENSE /out/licenses/Go-LICENSE && \
-    cp go.mod go.sum /tmp/uploader-modules.txt /out/licenses/ && \
+    cp go.mod go.sum /tmp/go-modules.txt /tmp/uploader-modules.txt /out/licenses/ && \
     git rev-parse HEAD > /out/licenses/source-commit && \
-    printf '%s\n' 'youtubeuploader dependencies were updated using uploader-modules.txt; see go.mod and go.sum.' > /out/licenses/CHANGES && \
+    printf '%s\n' 'youtubeuploader dependencies were updated using go-modules.txt and uploader-modules.txt; see go.mod and go.sum.' > /out/licenses/CHANGES && \
     go list -deps -f '{{with .Module}}{{.Path}} {{.Dir}}{{end}}' ./cmd/youtubeuploader | sort -u | \
     while read -r module directory; do \
         test -n "$directory" || continue; \
@@ -32,7 +33,10 @@ ENV GOTOOLCHAIN=local
 ARG RCLONE_RELEASE=v1.75.2
 WORKDIR /src
 RUN git clone --depth 1 --branch "${RCLONE_RELEASE}" https://github.com/rclone/rclone.git .
-RUN --mount=type=cache,target=/go/pkg/mod go mod download && go mod verify
+COPY build/go-modules.txt /tmp/go-modules.txt
+# Apply the same security fixes to both bundled Go applications.
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    xargs go get < /tmp/go-modules.txt && go mod tidy && go mod verify
 ARG TARGETARCH
 ARG TARGETVARIANT
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
@@ -41,8 +45,10 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     -o /out/rclone .
 RUN --mount=type=cache,target=/go/pkg/mod \
     mkdir -p /out/licenses && cp COPYING /out/licenses/Rclone-LICENSE && \
-    cp /usr/local/go/LICENSE /out/licenses/Go-LICENSE && cp go.mod go.sum /out/licenses/ && \
+    cp /usr/local/go/LICENSE /out/licenses/Go-LICENSE && \
+    cp go.mod go.sum /tmp/go-modules.txt /out/licenses/ && \
     git rev-parse HEAD > /out/licenses/source-commit && \
+    printf '%s\n' 'rclone dependencies were updated using go-modules.txt; see go.mod and go.sum.' > /out/licenses/CHANGES && \
     go list -deps -f '{{with .Module}}{{.Path}} {{.Dir}}{{end}}' . | sort -u | \
     while read -r module directory; do \
         test -n "$directory" || continue; \

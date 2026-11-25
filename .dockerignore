@@ -30,6 +30,7 @@
 !supervisord.conf
 !build/
 build/**
+!build/go-modules.txt
 !build/uploader-modules.txt
 !tests/
 tests/**

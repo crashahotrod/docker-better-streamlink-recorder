@@ -553,7 +553,8 @@ metadata. YouTube controls whether its player displays description chapters.
 
 ## Cloud archives with rclone
 
-The image includes rclone v1.75.2, built with the pinned Go toolchain. Set
+The image includes rclone v1.75.2, built with the pinned Go toolchain and shared
+security updates in `build/go-modules.txt`. Set
 `RCLONE_REMOTE=b2:my-bucket/archives` and provide
 a readable `/config/rclone.conf` in the existing config volume, or use rclone's
 environment configuration for S3/B2/Drive and other supported backends. For example:
@@ -814,7 +815,9 @@ tiny-video benchmark. Tests never use live uploads or service credentials.
 
 The image uses the maintained Python 3.12 slim Bookworm base. The uploader is
 built from its tagged upstream source using Go 1.26.10 and the security updates
-pinned in `build/uploader-modules.txt`; its upstream tests run during the build.
+pinned in `build/go-modules.txt` and `build/uploader-modules.txt`; its upstream
+tests run during the build. Both the uploader and rclone apply the shared Go
+module pins, including `golang.org/x/net` v0.62.0 for CVE-2026-78661.
 Build tools stay in separate build stages. Keep persistent
 scratch/storage volumes when upgrading; do not prune pending or quarantined jobs.
 
@@ -863,7 +866,8 @@ checks pass. Commits to the default branch trigger multi-architecture image buil
 and publication. Configure `REPO_PAT` with repository contents write permission so
 pushed commits trigger downstream publication workflows.
 Image publication also requires the existing Docker Hub repository/token secrets.
-Review the Go toolchain and uploader module security pins when updating dependencies.
+Review the Go toolchain, shared Go module pins, and uploader-specific module pins
+when updating dependencies.
 The image scan blocks publication on known critical/high vulnerabilities with
 available fixes; it does not certify the absence of other vulnerabilities.
 

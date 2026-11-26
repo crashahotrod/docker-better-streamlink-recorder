@@ -59,7 +59,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     done
 
 FROM python:3.12-bookworm AS streamlink
-ENV streamlinkCommit=34ac0c5ff4f70b0c9b2183e899024bf8e13ec15f
+ENV streamlinkCommit=a685512a746a99a429b2678e2718c1ee85ba9f6c
 # Keep the certificate bundle above the critical advisory's fixed release.
 RUN pip3 install --no-cache-dir --root-user-action=ignore --prefix=/install certifi==2026.10.19 git+https://github.com/streamlink/streamlink.git@${streamlinkCommit}
 RUN pip3 install --no-cache-dir --root-user-action=ignore --prefix=/install websocket-client==1.9.2

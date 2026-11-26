@@ -74,7 +74,11 @@ ARG GROUP_ID=568
 ENV USER_NAME=${USER_NAME}
 ENV HTTP_STATUS_ENABLED=false
 RUN groupadd -r -g ${GROUP_ID} ${USER_NAME} && useradd -r -u ${USER_ID} -g ${USER_NAME} -m -s /bin/bash ${USER_NAME}
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates supervisor jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini util-linux tzdata && rm -rf /var/lib/apt/lists/*
+# CVE-2026-96889: require Debian's fixed librsvg, including on cached builds.
+ARG LIBRSVG_MIN_VERSION=2.54.7+dfsg-1~deb12u2
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates supervisor jq inotify-tools ffmpeg exiftool chromium chromium-driver gosu libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 dbus-x11 tini util-linux tzdata librsvg2-2 && \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' librsvg2-2)" ge "$LIBRSVG_MIN_VERSION" && \
+    rm -rf /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends mesa-va-drivers && \
     if [ "$(dpkg --print-architecture)" = amd64 ]; then \
         apt-get install -y --no-install-recommends intel-media-va-driver i965-va-driver; \

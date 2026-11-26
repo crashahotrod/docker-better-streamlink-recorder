@@ -90,7 +90,8 @@ done
 [[ -z $(find "$TMPDIR" -mindepth 1 -print -quit) ]]
 
 # Resolver tests exercise real parsing and monitor fallback with deterministic output.
-# shellcheck disable=SC2317
+# Invoked indirectly by the timeout mock below through "$@".
+# shellcheck disable=SC2317,SC2329
 streamlink() {
     printf '%s\0' "$@" > "$TEST_ROOT/resolver-args"
     printf '%s' "$RESOLVER_RESPONSE"
